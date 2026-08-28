@@ -1,16 +1,15 @@
-import os
-from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+
+from config import engine
 
 
 class ChatRequest(BaseModel):
     message: str
 
-load_dotenv()
 app = FastAPI()
 
 app.add_middleware(
@@ -20,14 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-db_url = (
-    f"postgresql+psycopg2://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}"
-    f"@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
-)
-
-engine = create_engine(db_url)
-
-model = ChatAnthropic(model="claude-haiku-4-5-20251001", temperature=0)  
+model = ChatAnthropic(model="claude-haiku-4-5-20251001", temperature=0)
 
 @app.get("/")
 async def root():
