@@ -1,0 +1,17 @@
+@reference "../index.css";
+
+.dashboard {
+  @apply px-2 pb-3 sm:px-4 sm:pb-5;
+}
+
+.dashboard__heading {
+  @apply m-0 text-3xl font-black sm:text-4xl;
+}
+
+.dashboard__breadcrumb {
+  @apply mt-2;
+}
+
+.dashboard__divider {
+  @apply mt-4 border-t-4 border-black;
+}

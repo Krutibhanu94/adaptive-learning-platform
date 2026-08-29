@@ -1,0 +1,25 @@
+@reference "../index.css";
+
+.app-bar {
+  @apply sticky top-0 z-50 flex h-14 w-full items-center justify-between border-b-4 border-black bg-[#730FC3] px-3 sm:h-16 sm:px-6;
+}
+
+.app-bar__logo {
+  @apply text-2xl font-black text-[#f7b801] sm:text-3xl;
+}
+
+.app-bar__profile {
+  @apply flex items-center gap-2;
+}
+
+.app-bar__profile-name {
+  @apply text-sm font-bold text-white sm:text-base;
+}
+
+.app-bar__profile-btn {
+  @apply flex size-9 shrink-0 items-center justify-center rounded-md border-2 border-black bg-white text-black shadow-[3px_3px_0px_0px_#000] transition-transform active:translate-x-0.75 active:translate-y-0.75 active:shadow-none sm:size-10;
+}
+
+.app-bar__profile-icon {
+  @apply size-5 sm:size-6;
+}
