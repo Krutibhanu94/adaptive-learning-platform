@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
+from langchain_anthropic import ChatAnthropic
 
 load_dotenv()
 
@@ -10,3 +11,6 @@ db_url = (
 )
 
 engine = create_engine(db_url)
+
+model = ChatAnthropic(model="claude-haiku-4-5-20251001", temperature=0)
+

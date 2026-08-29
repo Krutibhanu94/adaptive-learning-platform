@@ -46,19 +46,19 @@ def get_student(student_id: int):
     with engine.connect() as conn:
         result = conn.execute(text("SELECT * FROM students WHERE student_id = :student_id"), {"student_id": student_id})
         student = result.fetchone()
-        return student
+        return dict(student._mapping) if student else None
 
 def get_topics():
     with engine.connect() as conn:
         result = conn.execute(text("SELECT * FROM topics"))
         topics = result.fetchall()
-        return topics
+        return [dict(topic._mapping) for topic in topics]
 
 def get_problem(problem_id: int):
     with engine.connect() as conn:
         result = conn.execute(text("SELECT * FROM problems WHERE problem_id = :problem_id"), {"problem_id": problem_id})
         problem = result.fetchone()
-        return problem
+        return [dict(problem._mapping)] if problem else None
 
 def get_next_problem(student_id: int, topic_id: int, tier: int | None):
     with engine.connect() as conn:
@@ -78,7 +78,7 @@ def get_next_problem(student_id: int, topic_id: int, tier: int | None):
             {"student_id": student_id, "topic_id": topic_id, "tier": tier, "submit_result": SubmitResult.PASS.value}
         )
         next_problem = result.fetchone()
-        return next_problem
+        return dict(next_problem._mapping) if next_problem else None
 
 def get_submit_result_problems(student_id: int, topic_id: int, submit_result: SubmitResult):
     with engine.connect() as conn:
@@ -96,7 +96,7 @@ def get_submit_result_problems(student_id: int, topic_id: int, submit_result: Su
             {"student_id": student_id, "topic_id": topic_id, "submit_result": submit_result.value}
         )
         problems = result.fetchall()
-        return problems
+        return [dict(problem._mapping) for problem in problems]
 
 # def get_completed_problems(student_id: int, topic_id: int):
 #     with engine.connect() as conn:
@@ -163,7 +163,7 @@ def get_student_skill_state(student_id: int, topic_id: int):
             {"student_id": student_id, "topic_id": topic_id}
         )
         skill_state = result.fetchone()
-        return skill_state  
+        return dict(skill_state._mapping) if skill_state else None
 
 def update_student_skill_state(update: StudentSkillStateUpdate):
     with engine.connect() as conn:
@@ -208,7 +208,7 @@ def get_recent_interactions(student_id: int, topic_id: int, limit: int = 5):
             {"student_id": student_id, "topic_id": topic_id, "limit": limit}
         )
         interactions = result.fetchall()
-        return interactions
+        return [dict(interaction._mapping) for interaction in interactions]
 
 def log_interaction(entry: InteractionLogEntry):
     with engine.connect() as conn:
@@ -243,3 +243,12 @@ def log_interaction(entry: InteractionLogEntry):
             }
         )
         conn.commit()
+
+def check_db_connection():
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT version();"))
+            return result.fetchone()[0] == 1
+    except Exception as e:
+        print(f"Database connection error: {e}")
+        return False
