@@ -1,0 +1,29 @@
+@reference "../index.css";
+
+.topic-cards {
+  @apply mt-8 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3;
+}
+
+.topic-card__footer {
+  @apply mt-auto justify-end;
+}
+
+.topic-card {
+  @apply bg-[#EEEEFF];
+}
+
+.topic-card__title {
+  @apply text-[#f7b801];
+}
+
+.topic-card__description {
+  @apply text-[#6E6E6E];
+}
+
+.topic-card__button {
+  @apply bg-[#3d348b] text-white hover:bg-[#3d348b]/90;
+}
+
+.topic-card__divider {
+  @apply my-2 border-t-2 border-black;
+}
