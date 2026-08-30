@@ -15,6 +15,14 @@ class SubmitResult(Enum):
     NO_SUBMISSION = "no_submission"
 
 @dataclass
+class ProblemInsert:
+    problem_name: str
+    problem_description: str
+    test_cases: list
+    tier: int
+    topic_id: int
+
+@dataclass
 class StudentSkillStateUpdate:
     student_id: int
     topic_id: int
@@ -59,6 +67,23 @@ def get_problem(problem_id: int):
         result = conn.execute(text("SELECT * FROM problems WHERE problem_id = :problem_id"), {"problem_id": problem_id})
         problem = result.fetchone()
         return [dict(problem._mapping)] if problem else None
+
+def insert_problem(problem_data: ProblemInsert):
+    with engine.connect() as conn:
+        conn.execute(
+            text("""
+            INSERT INTO problems (problem_name, problem_description, test_cases, tier, topic_id)
+            VALUES (:problem_name, :problem_description, :test_cases, :tier, :topic_id)
+            """),
+            {
+                "problem_name": problem_data.problem_name,
+                "problem_description": problem_data.problem_description,
+                "test_cases": problem_data.test_cases,
+                "tier": problem_data.tier,
+                "topic_id": problem_data.topic_id
+            }
+        )
+        conn.commit()
 
 def get_next_problem(student_id: int, topic_id: int, tier: int | None):
     with engine.connect() as conn:
