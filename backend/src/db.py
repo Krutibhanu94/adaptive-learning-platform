@@ -56,11 +56,27 @@ def get_student(student_id: int):
         student = result.fetchone()
         return dict(student._mapping) if student else None
 
+def insert_student(student_name: str, username: str):
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("INSERT INTO students (username, student_name) VALUES (:student_name, :username) ON CONFLICT (username) DO NOTHING"),
+            {"username": username, "student_name": student_name}
+        )
+        conn.commit()
+
 def get_topics():
     with engine.connect() as conn:
         result = conn.execute(text("SELECT * FROM topics"))
         topics = result.fetchall()
         return [dict(topic._mapping) for topic in topics]
+
+def insert_topic(topic_name: str, topic_description: str):
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("INSERT INTO topics (topic_name, topic_description) VALUES (:topic_name, :topic_description) ON CONFLICT (topic_name) DO NOTHING"),
+            {"topic_name": topic_name, "topic_description": topic_description}
+        )
+        conn.commit()
 
 def get_problem(problem_id: int):
     with engine.connect() as conn:

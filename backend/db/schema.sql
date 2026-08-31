@@ -8,13 +8,13 @@
 
 CREATE TABLE IF NOT EXISTS Students (
     student_id SERIAL PRIMARY KEY,
-    username TEXT NOT NULL,
+    username TEXT NOT NULL UNIQUE,
     student_name TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS Topics (
     topic_id SERIAL PRIMARY KEY,
-    topic_name TEXT NOT NULL,
+    topic_name TEXT NOT NULL UNIQUE,
     topic_description TEXT NOT NULL
 );
 
