@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from config import model
-from db import check_db_connection, get_student, get_topics
+from db import check_db_connection, get_student, get_topic_progress, get_topics
 from pydantic import BaseModel
 
 class ChatRequest(BaseModel):
@@ -20,6 +20,10 @@ async def topics():
     result = get_topics()
     return {"topics": result}
 
+@router.get("/student/{student_id}/topics/{topic_id}/progress")
+async def topic_progress(student_id: int, topic_id: int):
+    result = get_topic_progress(student_id, topic_id)
+    return {"progress": result}
 
 @router.post("/ping")
 async def ping(request: ChatRequest):
