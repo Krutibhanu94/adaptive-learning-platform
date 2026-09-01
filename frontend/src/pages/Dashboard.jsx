@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
+import { Link, Outlet, useParams } from "react-router-dom"
 
-import Topics from "@/pages/Topics"
 import {
   Breadcrumb,
   BreadcrumbList,
@@ -9,11 +9,13 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
+import { Separator } from "@/components/ui/separator"
 
 import "./Dashboard.css"
 
 function Dashboard() {
   const [topics, setTopics] = useState([])
+  const { topicId } = useParams()
 
   useEffect(() => {
     const fetchTopics = async () => {
@@ -34,6 +36,10 @@ function Dashboard() {
     fetchTopics()
   }, [])
 
+  const currentTopic = topicId
+    ? topics.find((topic) => String(topic.topic_id) === topicId)
+    : null
+
   return (
     <div className="dashboard">
       <h1 className="dashboard__heading">Student Dashboard</h1>
@@ -41,18 +47,34 @@ function Dashboard() {
       <Breadcrumb className="dashboard__breadcrumb">
         <BreadcrumbList>
           <BreadcrumbItem>
-            <BreadcrumbLink href="#">Dashboard</BreadcrumbLink>
+            <BreadcrumbLink asChild>
+              <Link to="/">Dashboard</Link>
+            </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
-          <BreadcrumbItem>
-            <BreadcrumbPage>Topics</BreadcrumbPage>
-          </BreadcrumbItem>
+          {currentTopic ? (
+            <>
+              <BreadcrumbItem>
+                <BreadcrumbLink asChild>
+                  <Link to="/">Topics</Link>
+                </BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbPage>{currentTopic.topic_name}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </>
+          ) : (
+            <BreadcrumbItem>
+              <BreadcrumbPage>Topics</BreadcrumbPage>
+            </BreadcrumbItem>
+          )}
         </BreadcrumbList>
       </Breadcrumb>
 
-      <hr className="dashboard__divider" />
+      <Separator className="dashboard__divider" />
 
-      <Topics topics={topics} />
+      <Outlet context={{ topics }} />
     </div>
   )
 }

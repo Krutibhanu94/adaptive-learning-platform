@@ -1,3 +1,5 @@
+import { useNavigate, useOutletContext } from "react-router-dom"
+
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -9,7 +11,10 @@ import {
 
 import "./Topics.css"
 
-function Topics({ topics }) {
+function Topics() {
+  const { topics } = useOutletContext()
+  const navigate = useNavigate()
+
   return (
     <div className="topic-cards">
       {topics.map((topic) => (
@@ -22,7 +27,12 @@ function Topics({ topics }) {
             </CardDescription>
           </CardHeader>
           <CardFooter className="topic-card__footer">
-            <Button className="topic-card__button">Access Topic</Button>
+            <Button
+              className="topic-card__button"
+              onClick={() => navigate(`/${topic.topic_id}`)}
+            >
+              Access Topic
+            </Button>
           </CardFooter>
         </Card>
       ))}

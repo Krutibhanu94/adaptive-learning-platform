@@ -121,23 +121,38 @@ def get_next_problem(student_id: int, topic_id: int, tier: int | None):
         next_problem = result.fetchone()
         return dict(next_problem._mapping) if next_problem else None
 
-def get_submit_result_problems(student_id: int, topic_id: int, submit_result: SubmitResult):
+def get_topic_progress(student_id: int, topic_id: int):
     with engine.connect() as conn:
         result = conn.execute(
             text("""
-            SELECT * FROM problems
-            WHERE topic_id = :topic_id
-              AND problem_id IN (
-                  SELECT problem_id FROM interaction_log
-                  WHERE student_id = :student_id
-                    AND topic_id = :topic_id
-                    AND submit_result = :submit_result
-                )
+            SELECT DISTINCT ON (p.problem_id) p.problem_id, p.problem_name, il.submit_result, il.created_at FROM interaction_log il
+            JOIN problems p ON il.problem_id = p.problem_id
+            WHERE il.student_id = :student_id
+              AND il.topic_id = :topic_id
+            ORDER BY p.problem_id, il.created_at DESC
             """),
-            {"student_id": student_id, "topic_id": topic_id, "submit_result": submit_result.value}
+            {"student_id": student_id, "topic_id": topic_id}
         )
-        problems = result.fetchall()
-        return [dict(problem._mapping) for problem in problems]
+        progress = result.fetchall()
+        return [dict(entry._mapping) for entry in progress]
+
+#def get_submit_result_problems(student_id: int, topic_id: int, submit_result: SubmitResult):
+#    with engine.connect() as conn:
+#        result = conn.execute(
+#            text("""
+#            SELECT * FROM problems
+#            WHERE topic_id = :topic_id
+#              AND problem_id IN (
+#                  SELECT problem_id FROM interaction_log
+#                  WHERE student_id = :student_id
+#                    AND topic_id = :topic_id
+#                    AND submit_result = :submit_result
+#                )
+#            """),
+#            {"student_id": student_id, "topic_id": topic_id, "submit_result": submit_result.value}
+#        )
+#        problems = result.fetchall()
+#        return [dict(problem._mapping) for problem in problems]
 
 # def get_completed_problems(student_id: int, topic_id: int):
 #     with engine.connect() as conn:
