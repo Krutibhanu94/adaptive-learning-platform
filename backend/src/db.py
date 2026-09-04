@@ -29,7 +29,7 @@ class StudentSkillStateUpdate:
     current_tier: int
     mastery_score: float
     dependency_score: float
-    hint_trend: float
+    hint_cap: int
     updated_at: str
 
 @dataclass
@@ -37,6 +37,7 @@ class InteractionLogEntry:
     student_id: int
     problem_id: int
     topic_id: int
+    attempt_id: int
     reasoning_state: ReasoningState
     submit_result: SubmitResult
     non_progress_flag: bool
@@ -49,6 +50,21 @@ class InteractionLogEntry:
     run_test_result: dict | None
     log_id: int | None = None
     created_at: str | None = None
+
+@dataclass
+class ProblemAttemptInsert:
+    student_id: int
+    problem_id: int
+    topic_id: int
+    tier: int
+    hint_cap: int
+
+@dataclass
+class ProblemAttemptUpdate:
+    attempt_id: int
+    result: SubmitResult
+    escalated: bool = False
+    escalation_reason: str | None = None
 
 def get_student(student_id: int):
     with engine.connect() as conn:
@@ -109,10 +125,10 @@ def get_next_problem(student_id: int, topic_id: int, tier: int | None):
                 WHERE topic_id = :topic_id
                   AND tier = :tier
                   AND problem_id NOT IN (
-                      SELECT problem_id FROM interaction_log
+                      SELECT problem_id FROM problem_attempts
                       WHERE student_id = :student_id
                         AND topic_id = :topic_id
-                        AND submit_result = :submit_result
+                        AND result = :submit_result
                   )
                 LIMIT 1
             """),
@@ -125,88 +141,160 @@ def get_topic_progress(student_id: int, topic_id: int):
     with engine.connect() as conn:
         result = conn.execute(
             text("""
-            SELECT DISTINCT ON (p.problem_id) p.problem_id, p.problem_name, il.submit_result, il.created_at FROM interaction_log il
-            JOIN problems p ON il.problem_id = p.problem_id
-            WHERE il.student_id = :student_id
-              AND il.topic_id = :topic_id
-            ORDER BY p.problem_id, il.created_at DESC
+            SELECT DISTINCT ON (p.problem_id) p.problem_id, p.problem_name,
+                pa.result AS submit_result,
+                COALESCE(pa.submitted_at, pa.started_at) AS created_at
+            FROM problem_attempts pa
+            JOIN problems p ON pa.problem_id = p.problem_id
+            WHERE pa.student_id = :student_id
+              AND pa.topic_id = :topic_id
+            ORDER BY p.problem_id, pa.started_at DESC
             """),
             {"student_id": student_id, "topic_id": topic_id}
         )
         progress = result.fetchall()
         return [dict(entry._mapping) for entry in progress]
 
-#def get_submit_result_problems(student_id: int, topic_id: int, submit_result: SubmitResult):
-#    with engine.connect() as conn:
-#        result = conn.execute(
-#            text("""
-#            SELECT * FROM problems
-#            WHERE topic_id = :topic_id
-#              AND problem_id IN (
-#                  SELECT problem_id FROM interaction_log
-#                  WHERE student_id = :student_id
-#                    AND topic_id = :topic_id
-#                    AND submit_result = :submit_result
-#                )
-#            """),
-#            {"student_id": student_id, "topic_id": topic_id, "submit_result": submit_result.value}
-#        )
-#        problems = result.fetchall()
-#        return [dict(problem._mapping) for problem in problems]
+def insert_attempt(attempt: ProblemAttemptInsert):
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("""
+            INSERT INTO problem_attempts (student_id, problem_id, topic_id, tier, hint_cap)
+            VALUES (:student_id, :problem_id, :topic_id, :tier, :hint_cap)
+            RETURNING attempt_id
+            """),
+            {
+                "student_id": attempt.student_id,
+                "problem_id": attempt.problem_id,
+                "topic_id": attempt.topic_id,
+                "tier": attempt.tier,
+                "hint_cap": attempt.hint_cap
+            }
+        )
+        attempt_id = result.fetchone()[0]
+        conn.commit()
+        return attempt_id
 
-# def get_completed_problems(student_id: int, topic_id: int):
-#     with engine.connect() as conn:
-#         result = conn.execute(
-#             text("""
-#             SELECT * FROM problems
-#             WHERE topic_id = :topic_id
-#               AND problem_id IN (
-#                   SELECT problem_id FROM interaction_log
-#                   WHERE student_id = :student_id
-#                     AND  topic_id = :topic_id
-#                     AND submit_result = 'pass'
-#                 )
-#             """),
-#             {"student_id": student_id, "topic_id": topic_id}
-#         )
-#         completed_problems = result.fetchall()
-#         return completed_problems
+def get_attempt(attempt_id: int):
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT * FROM problem_attempts WHERE attempt_id = :attempt_id"),
+            {"attempt_id": attempt_id}
+        )
+        attempt = result.fetchone()
+        return dict(attempt._mapping) if attempt else None
 
-# def get_failed_problems(student_id: int, topic_id: int):
-#     with engine.connect() as conn:
-#         result = conn.execute(
-#             text("""
-#             SELECT * FROM problems
-#             WHERE topic_id = :topic_id
-#               AND problem_id IN (
-#                   SELECT problem_id FROM interaction_log
-#                   WHERE student_id = :student_id
-#                     AND  topic_id = :topic_id
-#                     AND submit_result = 'fail'
-#                 )
-#             """),
-#             {"student_id": student_id, "topic_id": topic_id}
-#         )
-#         failed_problems = result.fetchall()
-#         return failed_problems
+def get_open_attempt(student_id: int, problem_id: int):
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("""
+            SELECT * FROM problem_attempts
+            WHERE student_id = :student_id
+              AND problem_id = :problem_id
+              AND result = :no_submission
+            ORDER BY started_at DESC
+            LIMIT 1
+            """),
+            {"student_id": student_id, "problem_id": problem_id, "no_submission": SubmitResult.NO_SUBMISSION.value}
+        )
+        attempt = result.fetchone()
+        return dict(attempt._mapping) if attempt else None
 
-# def get_partially_completed_problems(student_id: int, topic_id: int):
-#     with engine.connect() as conn:
-#         result = conn.execute(
-#             text("""
-#             SELECT * FROM problems
-#             WHERE topic_id = :topic_id
-#               AND problem_id IN (
-#                   SELECT problem_id FROM interaction_log
-#                   WHERE student_id = :student_id
-#                     AND  topic_id = :topic_id
-#                     AND submit_result = 'partial'
-#                 )
-#             """),
-#             {"student_id": student_id, "topic_id": topic_id}
-#         )
-#         partially_completed_problems = result.fetchall()
-#         return partially_completed_problems
+def get_attempts_for_tier(student_id: int, topic_id: int, tier: int, limit: int = 5):
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("""
+            SELECT * FROM problem_attempts
+            WHERE student_id = :student_id
+              AND topic_id = :topic_id
+              AND tier = :tier
+              AND result != :no_submission
+            ORDER BY submitted_at DESC
+            LIMIT :limit
+            """),
+            {
+                "student_id": student_id,
+                "topic_id": topic_id,
+                "tier": tier,
+                "no_submission": SubmitResult.NO_SUBMISSION.value,
+                "limit": limit
+            }
+        )
+        attempts = result.fetchall()
+        return [dict(attempt._mapping) for attempt in attempts]
+
+def mark_attempt_engaged(attempt_id: int):
+    with engine.connect() as conn:
+        conn.execute(
+            text("UPDATE problem_attempts SET engagement_occurred = TRUE WHERE attempt_id = :attempt_id"),
+            {"attempt_id": attempt_id}
+        )
+        conn.commit()
+
+def mark_attempt_struggle(attempt_id: int):
+    with engine.connect() as conn:
+        conn.execute(
+            text("UPDATE problem_attempts SET struggle_detected = TRUE WHERE attempt_id = :attempt_id"),
+            {"attempt_id": attempt_id}
+        )
+        conn.commit()
+
+def increment_attempt_hints(attempt_id: int):
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("""
+            UPDATE problem_attempts
+            SET hints_used = hints_used + 1
+            WHERE attempt_id = :attempt_id
+            RETURNING hints_used
+            """),
+            {"attempt_id": attempt_id}
+        )
+        hints_used = result.fetchone()[0]
+        conn.commit()
+        return hints_used
+
+def conclude_attempt(update: ProblemAttemptUpdate):
+    with engine.connect() as conn:
+        conn.execute(
+            text("""
+            UPDATE problem_attempts
+            SET result = :result,
+                escalated = :escalated,
+                escalation_reason = :escalation_reason,
+                submitted_at = CURRENT_TIMESTAMP
+            WHERE attempt_id = :attempt_id
+            """),
+            {
+                "attempt_id": update.attempt_id,
+                "result": update.result.value,
+                "escalated": update.escalated,
+                "escalation_reason": update.escalation_reason
+            }
+        )
+        conn.commit()
+
+def count_bypass_for_attempt(attempt_id: int):
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("""
+            SELECT COUNT(*) FROM interaction_log
+            WHERE attempt_id = :attempt_id
+              AND reasoning_state = :bypass
+            """),
+            {"attempt_id": attempt_id, "bypass": ReasoningState.BYPASS.value}
+        )
+        count = result.fetchone()
+        return count[0] if count else 0
+
+def count_turns_for_attempt(attempt_id: int):
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT COUNT(*) FROM interaction_log WHERE attempt_id = :attempt_id"),
+            {"attempt_id": attempt_id}
+        )
+        count = result.fetchone()
+        return count[0] if count else 0
 
 def get_student_skill_state(student_id: int, topic_id: int):
     with engine.connect() as conn:
@@ -227,16 +315,16 @@ def update_student_skill_state(update: StudentSkillStateUpdate):
             text("""
             INSERT INTO student_skill_state (
                 student_id, topic_id, current_tier, mastery_score,
-                dependency_score, hint_trend, updated_at
+                dependency_score, hint_cap, updated_at
             ) VALUES (
                 :student_id, :topic_id, :current_tier, :mastery_score,
-                :dependency_score, :hint_trend, :updated_at
+                :dependency_score, :hint_cap, :updated_at
             )
             ON CONFLICT (student_id, topic_id) DO UPDATE SET
                 current_tier = EXCLUDED.current_tier,
                 mastery_score = EXCLUDED.mastery_score,
                 dependency_score = EXCLUDED.dependency_score,
-                hint_trend = EXCLUDED.hint_trend,
+                hint_cap = EXCLUDED.hint_cap,
                 updated_at = EXCLUDED.updated_at
             """),
             {
@@ -245,47 +333,33 @@ def update_student_skill_state(update: StudentSkillStateUpdate):
                 "current_tier": update.current_tier,
                 "mastery_score": update.mastery_score,
                 "dependency_score": update.dependency_score,
-                "hint_trend": update.hint_trend,
+                "hint_cap": update.hint_cap,
                 "updated_at": update.updated_at
             }
         )
         conn.commit()
-
-def get_recent_interactions(student_id: int, topic_id: int, limit: int = 5):
-    with engine.connect() as conn:
-        result = conn.execute(
-            text("""
-            SELECT * FROM interaction_log
-            WHERE student_id = :student_id
-              AND topic_id = :topic_id
-            ORDER BY created_at DESC
-            LIMIT :limit
-            """),
-            {"student_id": student_id, "topic_id": topic_id, "limit": limit}
-        )
-        interactions = result.fetchall()
-        return [dict(interaction._mapping) for interaction in interactions]
 
 def log_interaction(entry: InteractionLogEntry):
     with engine.connect() as conn:
         conn.execute(
             text("""
             INSERT INTO interaction_log (
-                student_id, problem_id, topic_id, reasoning_state,
+                student_id, problem_id, topic_id, attempt_id, reasoning_state,
                 submit_result, non_progress_flag, turn_number,
                 hints_used_this_turn, mastery_score, dependency_score,
-                current_tier, turn_summary, run_test_result
+                current_tier, turn_summary, run_test_result, created_at
             ) VALUES (
-                :student_id, :problem_id, :topic_id, :reasoning_state,
+                :student_id, :problem_id, :topic_id, :attempt_id, :reasoning_state,
                 :submit_result, :non_progress_flag, :turn_number,
                 :hints_used_this_turn, :mastery_score, :dependency_score,
-                :current_tier, :turn_summary, :run_test_result
+                :current_tier, :turn_summary, :run_test_result, :created_at
             )
             """),
             {
                 "student_id": entry.student_id,
                 "problem_id": entry.problem_id,
                 "topic_id": entry.topic_id,
+                "attempt_id": entry.attempt_id,
                 "reasoning_state": entry.reasoning_state.value,
                 "submit_result": entry.submit_result.value,
                 "non_progress_flag": entry.non_progress_flag,
@@ -295,7 +369,8 @@ def log_interaction(entry: InteractionLogEntry):
                 "dependency_score": entry.dependency_score,
                 "current_tier": entry.current_tier,
                 "turn_summary": entry.turn_summary,
-                "run_test_result": entry.run_test_result
+                "run_test_result": entry.run_test_result,
+                "created_at": entry.created_at
             }
         )
         conn.commit()

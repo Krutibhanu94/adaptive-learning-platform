@@ -1,4 +1,5 @@
 -- DROP TABLE IF EXISTS interaction_log CASCADE;
+-- DROP TABLE IF EXISTS problem_attempts CASCADE;
 -- DROP TABLE IF EXISTS student_skill_state CASCADE;
 -- DROP TABLE IF EXISTS problems CASCADE;
 -- DROP TABLE IF EXISTS topics CASCADE;
@@ -27,6 +28,41 @@ CREATE TABLE IF NOT EXISTS Problems (
     topic_id INT REFERENCES Topics(topic_id)
 );
 
+CREATE TYPE reasoning_state_enum AS ENUM ('genuine', 'bypass', 'none');
+
+CREATE TYPE submit_result_enum AS ENUM ('pass', 'fail', 'partial', 'no_submission');
+
+-- One row per "Problem Attempt" (opening a problem starts a new attempt).
+-- tier/hint_cap are a snapshot of Student_Skill_State taken when the attempt
+-- opens; hint-cap tapering trends are computed by comparing this snapshot
+-- across successive attempt rows for the same student/topic/tier.
+CREATE TABLE IF NOT EXISTS Problem_Attempts (
+    attempt_id SERIAL PRIMARY KEY,
+    student_id INT REFERENCES Students(student_id),
+    problem_id INT REFERENCES Problems(problem_id),
+    topic_id INT REFERENCES Topics(topic_id),
+    tier INT NOT NULL,
+    hint_cap INT NOT NULL,
+    hints_used INT NOT NULL DEFAULT 0,
+    -- Sticky flags: once true, they stay true for the rest of the attempt.
+    -- engagement_occurred gates Submit (at least one genuine probe/evaluate
+    -- exchange, regardless of its genuine/bypass classification).
+    engagement_occurred BOOLEAN NOT NULL DEFAULT FALSE,
+    struggle_detected BOOLEAN NOT NULL DEFAULT FALSE,
+    escalated BOOLEAN NOT NULL DEFAULT FALSE,
+    escalation_reason TEXT,
+    -- The canonical "has this attempt concluded" check is
+    -- `result != 'no_submission'`, not `submitted_at IS NOT NULL` — result
+    -- is strictly more informative (it also says what happened). submitted_at
+    -- is kept purely as a timestamp (ordering/duration auditing): it can't be
+    -- derived from Interaction_Log, since the "all tests pass, engagement
+    -- already occurred -> straight to Submit" path can conclude an attempt
+    -- without writing a new Interaction_Log row.
+    result submit_result_enum NOT NULL DEFAULT 'no_submission',
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    submitted_at TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS Student_Skill_State (
     student_id INT REFERENCES Students(student_id),
     topic_id INT REFERENCES Topics(topic_id),
@@ -34,17 +70,22 @@ CREATE TABLE IF NOT EXISTS Student_Skill_State (
     current_tier INT NOT NULL,
     mastery_score FLOAT NOT NULL,
     dependency_score FLOAT NOT NULL,
-    hint_trend FLOAT NOT NULL,
+    -- Replaces the old rolling hint_trend average. Resets to a starting
+    -- value on entering a new tier; tapers toward zero as decide observes
+    -- genuine improvement across successive same-tier attempts.
+    hint_cap INT NOT NULL DEFAULT 3,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TYPE reasoning_state_enum AS ENUM ('genuine', 'bypass', 'none');
-
-CREATE TYPE submit_result_enum AS ENUM ('pass', 'fail', 'partial', 'no_submission');
-
 CREATE TABLE IF NOT EXISTS Interaction_Log (
     log_id SERIAL PRIMARY KEY,
+    attempt_id INT REFERENCES Problem_Attempts(attempt_id),
     reasoning_state reasoning_state_enum NOT NULL,
+    -- The test-check outcome (if any) associated with this specific turn —
+    -- e.g. a Run Test click that grounded this turn's probe. 'no_submission'
+    -- is the sentinel for ordinary conversational turns. This is distinct
+    -- from Problem_Attempts.result, which is the single final outcome set
+    -- once, when Submit closes the attempt.
     submit_result submit_result_enum NOT NULL,
     non_progress_flag BOOLEAN NOT NULL,
     turn_number INT NOT NULL,
@@ -54,8 +95,15 @@ CREATE TABLE IF NOT EXISTS Interaction_Log (
     dependency_score FLOAT NOT NULL,
     current_tier INT NOT NULL,
     turn_summary TEXT NOT NULL,
-    run_test_result JSONB NOT NULL,
+    -- Nullable: most turns under the conditionally-routed design (a probe,
+    -- a check-in, a hint) have no test run associated with them at all.
+    run_test_result JSONB,
     student_id INT REFERENCES Students(student_id),
     problem_id INT REFERENCES Problems(problem_id),
     topic_id INT REFERENCES Topics(topic_id)
 );
+
+-- Supports decide's per-attempt aggregates (e.g. bypass_count), which query
+-- Interaction_Log scoped to a single attempt rather than the last N rows
+-- across all attempts.
+CREATE INDEX IF NOT EXISTS idx_interaction_log_attempt_id ON Interaction_Log(attempt_id);
