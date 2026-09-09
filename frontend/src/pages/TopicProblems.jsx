@@ -59,6 +59,14 @@ function TopicProblems() {
         </Button>
 
         <h1 className="topic-problems__heading">Problems</h1>
+
+        <Button
+          type="button"
+          className="topic-problems__start"
+          onClick={() => navigate(`/${topicId}/workspace`)}
+        >
+          Start Problem
+        </Button>
       </div>
 
       <Separator className="topic-problems__divider" />

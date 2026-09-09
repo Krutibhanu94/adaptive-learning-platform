@@ -619,21 +619,4 @@ graph_builder.add_edge("serve", END)
 # invoke() -- that's the gap this stub marks.
 graph = graph_builder.compile()
 
-if __name__ == "__main__":
-    result = graph.invoke({
-        "student_id": 1,
-        "topic_id": 7,
-        "problem_id": 4,
-        "attempt_id": 1,
-        "problem_description": "Write a function that returns the factorial of a number using recursion.",
-        "tier": 1,
-        "hint_cap": STARTING_HINT_CAP,
-        "hints_used": 0,
-        "engagement_occurred": False,
-        "struggle_detected": False,
-        "pending_response_to": None,
-        "student_message": "I think I should use a for loop here.",
-        "idle_seconds": 0,
-        "repeated_edit_count": 0,
-    })
-    print(result)
+

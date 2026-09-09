@@ -1,0 +1,25 @@
+@reference "../index.css";
+
+.problem {
+  @apply flex h-full min-h-0 flex-col overflow-hidden rounded-md border-2 border-black bg-[#EEEEFF];
+}
+
+.problem__bar {
+  @apply flex items-center border-b-2 border-black px-3 py-1.5;
+}
+
+.problem__header {
+  @apply rounded-sm border-2 border-black bg-[#3d348b] px-2 py-0.5 text-xs font-black uppercase tracking-wide text-white;
+}
+
+.problem__content {
+  @apply flex min-h-0 flex-1 flex-col gap-2 overflow-auto p-4;
+}
+
+.problem__name {
+  @apply m-0 text-lg font-black text-black;
+}
+
+.problem__description {
+  @apply text-sm font-bold text-[#6E6E6E];
+}

@@ -3,6 +3,7 @@ import { AppBar } from "@/components/appBar"
 import Dashboard from "@/pages/Dashboard"
 import Topics from "@/pages/Topics"
 import TopicProblems from "@/pages/TopicProblems"
+import Workspace from "@/pages/Workspace"
 import { useStudent } from "@/context/useStudent"
 import './App.css'
 
@@ -18,6 +19,7 @@ function App() {
             <Route index element={<Topics />} />
             <Route path=":topicId" element={<TopicProblems />} />
           </Route>
+          <Route path="/:topicId/workspace" element={<Workspace />} />
         </Routes>
       </section>
     </BrowserRouter>

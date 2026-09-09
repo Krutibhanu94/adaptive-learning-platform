@@ -1,0 +1,49 @@
+@reference "../index.css";
+
+.workspace {
+  @apply flex h-full min-h-0 flex-1 flex-col sm:flex-row;
+}
+
+.workspace__main {
+  @apply flex min-h-0 flex-1 flex-col sm:basis-3/4;
+}
+
+.workspace__header {
+  @apply flex items-center gap-3 border-b-4 border-black px-2 py-3 sm:px-4;
+}
+
+.workspace__back {
+  @apply flex size-9 shrink-0 items-center justify-center border-2 border-black bg-[#3d348b] p-0 text-white shadow-[3px_3px_0px_0px_#000] transition-transform hover:bg-[#3d348b]/90 active:translate-x-0.75 active:translate-y-0.75 active:shadow-none;
+}
+
+.workspace__back-icon {
+  @apply size-5;
+}
+
+.workspace__problem-name {
+  @apply m-0 text-xl font-black sm:text-2xl;
+}
+
+.workspace__content {
+  @apply flex min-h-0 flex-1 flex-col gap-3 p-2 sm:flex-row sm:gap-4 sm:p-4;
+}
+
+.workspace__editor {
+  @apply flex min-h-0 flex-2 flex-col overflow-hidden rounded-md border-2 border-black;
+}
+
+.workspace__code {
+  @apply min-h-0 flex-[3];
+}
+
+.workspace__testcases {
+  @apply flex flex-1 items-center justify-center border-t-2 border-black bg-[#EEEEFF] p-2 text-sm font-bold text-[#6E6E6E];
+}
+
+.workspace__description {
+  @apply min-h-0 flex-1;
+}
+
+.workspace__chat {
+  @apply min-h-0 border-t-4 border-black p-2 sm:basis-1/4 sm:border-t-0 sm:border-l-4 sm:p-4;
+}

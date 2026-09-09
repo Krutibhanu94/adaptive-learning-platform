@@ -8,6 +8,10 @@
   @apply mt-4 flex items-center gap-3;
 }
 
+.topic-problems__start {
+  @apply border-2 border-black bg-[#3d348b] text-white shadow-[3px_3px_0px_0px_#000] transition-transform hover:bg-[#3d348b]/90 active:translate-x-0.75 active:translate-y-0.75 active:shadow-none;
+}
+
 .topic-problems__back {
   @apply flex size-9 shrink-0 items-center justify-center border-2 border-black bg-[#3d348b] p-0 text-white shadow-[3px_3px_0px_0px_#000] transition-transform hover:bg-[#3d348b]/90 active:translate-x-0.75 active:translate-y-0.75 active:shadow-none;
 }
@@ -17,7 +21,7 @@
 }
 
 .topic-problems__heading {
-  @apply m-0 text-xl font-black sm:text-2xl;
+  @apply m-0 flex-1 text-xl font-black sm:text-2xl;
 }
 
 .topic-problems__divider {

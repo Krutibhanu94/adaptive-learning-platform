@@ -1,0 +1,17 @@
+@reference "../index.css";
+
+.code-editor {
+  @apply flex h-full min-h-0 flex-col;
+}
+
+.code-editor__language {
+  @apply flex items-center border-b-2 border-black bg-[#EEEEFF] px-3 py-1.5;
+}
+
+.code-editor__language-badge {
+  @apply rounded-sm border-2 border-black bg-[#3d348b] px-2 py-0.5 text-xs font-black uppercase tracking-wide text-white;
+}
+
+.code-editor__pane {
+  @apply min-h-0 flex-1;
+}
