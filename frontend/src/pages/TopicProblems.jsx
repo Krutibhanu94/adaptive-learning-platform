@@ -22,6 +22,36 @@ function TopicProblems() {
   const student = useStudent()
 
   const [problems, setProblems] = useState([])
+  const [starting, setStarting] = useState(false)
+
+  const handleStart = async () => {
+    if (!student || starting) return
+    setStarting(true)
+
+    try {
+      const response = await fetch(
+        `http://localhost:8000/students/${student.student_id}/topics/${topicId}/start`,
+        { method: "POST" }
+      )
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+
+      const data = await response.json()
+
+      if (!data.found) {
+        console.error("No problem available to start:", data.message)
+        return
+      }
+
+      navigate(`/${topicId}/workspace/${data.attempt_id}`, { state: { problem: data } })
+    } catch (error) {
+      console.error("Error starting attempt:", error)
+    } finally {
+      setStarting(false)
+    }
+  }
 
   useEffect(() => {
     if (!student) return
@@ -63,9 +93,10 @@ function TopicProblems() {
         <Button
           type="button"
           className="topic-problems__start"
-          onClick={() => navigate(`/${topicId}/workspace`)}
+          onClick={handleStart}
+          disabled={starting}
         >
-          Start Problem
+          {starting ? "Starting..." : "Start Problem"}
         </Button>
       </div>
 

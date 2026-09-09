@@ -1,8 +1,11 @@
 from datetime import datetime
 
-from config import model
+from config import checkpoint_db_url, model
 from typing import Literal, TypedDict
+from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import StateGraph, START, END
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 from pydantic import BaseModel
 
 from db import (
@@ -70,10 +73,20 @@ class GraphState(TypedDict, total=False):
     # opening-specific 5-minute follow-up timer. Any other outstanding probe falls back
     # to the standard idle/repeated-edit checks, not this timer.
     is_opening_probe: bool
+    # Server-computed bookkeeping the /turn endpoint uses to derive idle_seconds and
+    # repeated_edit_count each call -- not sent by the frontend directly, just persisted
+    # here via the checkpointer like everything else in this block.
+    last_activity_at: str | None
+    last_student_code: str | None
 
     # Produced during this run.
     probe_question: str
-    reasoning_state: ReasoningState
+    # Stored as the plain "genuine"/"bypass" string, not the ReasoningState enum --
+    # this field is never read back from state (only ever set here and written into
+    # InteractionLogEntry locally), and the checkpointer's msgpack serializer doesn't
+    # natively support custom Enum types, which was logging a deserialization warning
+    # on every turn ("will be blocked in a future version").
+    reasoning_state: str
     turn_summary: str
     intervention_message: str
     mastery_score: float
@@ -104,7 +117,17 @@ def probe_node(state: GraphState) -> GraphState:
 
         Ask a single Socratic question grounded specifically in what failed, to help them
         reason about why. Do not confirm the fix, and do not give the answer."""
+    elif student_message:
+        prompt = f"""You are a Socratic tutor. A student is working on this problem:
+        {state['problem_description']}
+        The student said: "{student_message}"
+        Respond with a single Socratic question that pushes the student to reason through
+        their approach. Do not confirm whether they are right or wrong, and do not give
+        the answer."""
     elif student_code:
+        # Reached when there's no fresh message this turn but code exists to ground a
+        # proactive probe in -- e.g. the opening-silence probe firing after the student
+        # started coding without saying anything.
         prompt = f"""You are a Socratic tutor. A student is working on this problem:
         {state['problem_description']}
 
@@ -116,13 +139,6 @@ def probe_node(state: GraphState) -> GraphState:
         approach, a specific line, their choice of syntax, an edge case, a variable's
         purpose, or anything else genuinely relevant to what's in front of you.
         Do not confirm whether their code is correct, and do not give the answer."""
-    elif student_message:
-        prompt = f"""You are a Socratic tutor. A student is working on this problem:
-        {state['problem_description']}
-        The student said: "{student_message}"
-        Respond with a single Socratic question that pushes the student to reason through
-        their approach. Do not confirm whether they are right or wrong, and do not give
-        the answer."""
     else:
         prompt = f"""You are a Socratic tutor. A student has just opened this problem and
         hasn't said anything yet:
@@ -179,7 +195,7 @@ def evaluate_reasoning(state: GraphState) -> GraphState:
     ))
 
     return {
-        "reasoning_state": reasoning_state,
+        "reasoning_state": reasoning_state.value,
         "turn_summary": evaluation.summary,
         "engagement_occurred": True,
         "pending_response_to": None,
@@ -608,15 +624,30 @@ graph_builder.add_edge("update", "decide")
 graph_builder.add_edge("decide", "serve")
 graph_builder.add_edge("serve", END)
 
-# TODO: real checkpointer for pause/resume persistence, e.g.
-#   from langgraph.checkpoint.postgres import PostgresSaver
-#   graph = graph_builder.compile(checkpointer=PostgresSaver(...))
-# keyed by attempt_id as the thread_id. Short-term/live-conversation state
+# Real checkpointer for pause/resume persistence, keyed by attempt_id as the
+# thread_id -- callers pass config={"configurable": {"thread_id": attempt_id}}
+# to graph.invoke()/graph.stream(). Short-term/live-conversation state
 # (pending_response_to, probe_question, tier, hint_cap, hints_used,
-# engagement_occurred, struggle_detected, mastery_score, dependency_score) belongs
-# in that checkpointed state across invocations, NOT reconstructed from the database
-# on every turn. Right now the caller must pass the full state back in on every
-# invoke() -- that's the gap this stub marks.
-graph = graph_builder.compile()
+# engagement_occurred, struggle_detected, mastery_score, dependency_score,
+# is_opening_probe) now lives here across invocations instead of being
+# reconstructed from the database on every turn: a caller only needs to supply
+# the fields specific to this invocation (student_message, student_code,
+# idle_seconds, run_test_clicked, etc.) plus the identity/starting fields on
+# the one call that opens a brand new attempt -- LangGraph merges partial
+# state updates into whatever this thread_id already has checkpointed.
+#
+# autocommit/prepare_threshold=0/dict_row match what PostgresSaver itself uses
+# internally (see PostgresSaver.from_conn_string) and are required for it to
+# work correctly against the pool.
+_checkpoint_pool = ConnectionPool(
+    conninfo=checkpoint_db_url,
+    max_size=10,
+    kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+    open=True,
+)
+checkpointer = PostgresSaver(_checkpoint_pool)
+checkpointer.setup()  # no-op after the first run; creates/migrates checkpoint tables.
+
+graph = graph_builder.compile(checkpointer=checkpointer)
 
 

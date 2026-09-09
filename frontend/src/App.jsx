@@ -19,7 +19,7 @@ function App() {
             <Route index element={<Topics />} />
             <Route path=":topicId" element={<TopicProblems />} />
           </Route>
-          <Route path="/:topicId/workspace" element={<Workspace />} />
+          <Route path="/:topicId/workspace/:attemptId" element={<Workspace />} />
         </Routes>
       </section>
     </BrowserRouter>

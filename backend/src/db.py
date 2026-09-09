@@ -200,6 +200,22 @@ def get_open_attempt(student_id: int, problem_id: int):
         attempt = result.fetchone()
         return dict(attempt._mapping) if attempt else None
 
+def get_open_attempt_for_topic(student_id: int, topic_id: int):
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("""
+            SELECT * FROM problem_attempts
+            WHERE student_id = :student_id
+              AND topic_id = :topic_id
+              AND result = :no_submission
+            ORDER BY started_at DESC
+            LIMIT 1
+            """),
+            {"student_id": student_id, "topic_id": topic_id, "no_submission": SubmitResult.NO_SUBMISSION.value}
+        )
+        attempt = result.fetchone()
+        return dict(attempt._mapping) if attempt else None
+
 def get_attempts_for_tier(student_id: int, topic_id: int, tier: int, limit: int = 5):
     with engine.connect() as conn:
         result = conn.execute(

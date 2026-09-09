@@ -1,4 +1,4 @@
-import { useNavigate } from "react-router-dom"
+import { useNavigate, useLocation, useParams } from "react-router-dom"
 import { ArrowLeft } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -10,6 +10,13 @@ import "./Workspace.css"
 
 function Workspace() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const { attemptId } = useParams()
+
+  // Only populated when navigated here from TopicProblems' Start Problem button --
+  // there's no GET /attempts/{attempt_id} rehydration endpoint yet, so a direct visit
+  // or a page refresh currently has no way to recover the problem data. Known gap.
+  const problem = location.state?.problem
 
   return (
     <div className="workspace">
@@ -24,14 +31,19 @@ function Workspace() {
             <ArrowLeft className="workspace__back-icon" />
           </Button>
 
-          <h1 className="workspace__problem-name">Problem Name</h1>
+          <h1 className="workspace__problem-name">
+            {problem?.problem_name ?? "Problem not loaded"}
+          </h1>
         </header>
 
         <div className="workspace__content">
             <div className="workspace__description">
               <Problem
-                problemName="Problem Name"
-                problemDescription="Problem description placeholder"
+                problemName={problem?.problem_name}
+                problemDescription={
+                  problem?.problem_description ??
+                  "Open this workspace via Start Problem on the topic's problem list."
+                }
               />
             </div>
             <div className="workspace__editor">
@@ -44,7 +56,7 @@ function Workspace() {
       </div>
 
       <div className="workspace__chat">
-        <Tutor />
+        <Tutor attemptId={attemptId} />
       </div>
     </div>
   )

@@ -1,8 +1,3 @@
-//this is the chat part of the workspace page.
-//lets have a header with the text "AI Tutor" and below it is the scrollable chat area where the user can see the chat history
-//  and below that is the input area all the way to the bottom its the static placement where the user can type their message and send it to the AI tutor.
-//  The AI tutor will respond with a message and the chat history will be updated accordingly.
-
 import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
@@ -10,16 +5,40 @@ import { Input } from "@/components/ui/input"
 
 import "./tutor.css"
 
-function Tutor() {
+function Tutor({ attemptId }) {
   const [messages, setMessages] = useState([])
   const [draft, setDraft] = useState("")
+  const [sending, setSending] = useState(false)
 
-  const handleSend = () => {
+  const handleSend = async () => {
     const trimmed = draft.trim()
-    if (!trimmed) return
+    if (!trimmed || !attemptId || sending) return
 
     setMessages((prev) => [...prev, { role: "student", text: trimmed }])
     setDraft("")
+    setSending(true)
+
+    try {
+      const response = await fetch(`http://localhost:8000/attempts/${attemptId}/turn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_type: "message", message: trimmed }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+
+      const data = await response.json()
+
+      if (data.message) {
+        setMessages((prev) => [...prev, { role: "tutor", text: data.message }])
+      }
+    } catch (error) {
+      console.error("Error sending message to tutor:", error)
+    } finally {
+      setSending(false)
+    }
   }
 
   const handleKeyDown = (event) => {
@@ -49,8 +68,9 @@ function Tutor() {
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={handleKeyDown}
+          disabled={sending}
         />
-        <Button type="button" className="tutor__send" onClick={handleSend}>
+        <Button type="button" className="tutor__send" onClick={handleSend} disabled={sending}>
           Send
         </Button>
       </div>
