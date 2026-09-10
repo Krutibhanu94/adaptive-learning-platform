@@ -1,8 +1,11 @@
 from datetime import datetime
 
-from config import model
+from config import checkpoint_db_url, model
 from typing import Literal, TypedDict
+from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import StateGraph, START, END
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 from pydantic import BaseModel
 
 from db import (
@@ -70,10 +73,27 @@ class GraphState(TypedDict, total=False):
     # opening-specific 5-minute follow-up timer. Any other outstanding probe falls back
     # to the standard idle/repeated-edit checks, not this timer.
     is_opening_probe: bool
+    # Sticky, attempt-scoped: True from the first time evaluate_reasoning classifies a
+    # reply as genuine, for the rest of the attempt -- same pattern as
+    # engagement_occurred/struggle_detected. This is what lets a later unprompted "let
+    # me code first" (with no new reasoning attached) be accepted as earned readiness
+    # rather than evasive bypass -- the trust comes from having reasoned genuinely at
+    # some point in this attempt, not from the immediately preceding message.
+    genuine_reasoning_shown: bool
+    # Server-computed bookkeeping the /turn endpoint uses to derive idle_seconds and
+    # repeated_edit_count each call -- not sent by the frontend directly, just persisted
+    # here via the checkpointer like everything else in this block.
+    last_activity_at: str | None
+    last_student_code: str | None
 
     # Produced during this run.
     probe_question: str
-    reasoning_state: ReasoningState
+    # Stored as the plain "genuine"/"bypass" string, not the ReasoningState enum --
+    # this field is never read back from state (only ever set here and written into
+    # InteractionLogEntry locally), and the checkpointer's msgpack serializer doesn't
+    # natively support custom Enum types, which was logging a deserialization warning
+    # on every turn ("will be blocked in a future version").
+    reasoning_state: str
     turn_summary: str
     intervention_message: str
     mastery_score: float
@@ -87,6 +107,12 @@ class GraphState(TypedDict, total=False):
 class ReasoningEvaluation(BaseModel):
     classification: Literal["genuine", "bypass"]
     summary: str
+    # Independent of classification: true if the student is signaling, in their own
+    # words, that they want to stop discussing and go implement their own
+    # understanding -- regardless of whether the tutor's last message offered that as
+    # an option. Demanding the tutor reveal or confirm the answer is never this, no
+    # matter how it's phrased -- that stays classification="bypass".
+    wants_to_proceed: bool = False
 
 
 def probe_node(state: GraphState) -> GraphState:
@@ -104,7 +130,17 @@ def probe_node(state: GraphState) -> GraphState:
 
         Ask a single Socratic question grounded specifically in what failed, to help them
         reason about why. Do not confirm the fix, and do not give the answer."""
+    elif student_message:
+        prompt = f"""You are a Socratic tutor. A student is working on this problem:
+        {state['problem_description']}
+        The student said: "{student_message}"
+        Respond with a single Socratic question that pushes the student to reason through
+        their approach. Do not confirm whether they are right or wrong, and do not give
+        the answer."""
     elif student_code:
+        # Reached when there's no fresh message this turn but code exists to ground a
+        # proactive probe in -- e.g. the opening-silence probe firing after the student
+        # started coding without saying anything.
         prompt = f"""You are a Socratic tutor. A student is working on this problem:
         {state['problem_description']}
 
@@ -116,13 +152,6 @@ def probe_node(state: GraphState) -> GraphState:
         approach, a specific line, their choice of syntax, an edge case, a variable's
         purpose, or anything else genuinely relevant to what's in front of you.
         Do not confirm whether their code is correct, and do not give the answer."""
-    elif student_message:
-        prompt = f"""You are a Socratic tutor. A student is working on this problem:
-        {state['problem_description']}
-        The student said: "{student_message}"
-        Respond with a single Socratic question that pushes the student to reason through
-        their approach. Do not confirm whether they are right or wrong, and do not give
-        the answer."""
     else:
         prompt = f"""You are a Socratic tutor. A student has just opened this problem and
         hasn't said anything yet:
@@ -140,14 +169,38 @@ def probe_node(state: GraphState) -> GraphState:
 
 
 def evaluate_reasoning(state: GraphState) -> GraphState:
+    genuine_shown = state.get("genuine_reasoning_shown", False)
+
+    genuine_shown_context = ""
+    if genuine_shown:
+        genuine_shown_context = """
+
+    Note: the student has already demonstrated genuine reasoning earlier in this
+    attempt. If their current reply doesn't contain new reasoning but signals they
+    want to move on to writing code (e.g. "let me code this up", "I'm ready now",
+    "I think I've got it"), that's earned readiness worth respecting, not evasion --
+    set wants_to_proceed to true. Only classify as bypass if they're demanding the
+    answer be revealed or confirmed rather than choosing to go apply their own
+    understanding."""
+
     prompt = f"""You are evaluating a student's response to a Socratic tutoring question.
     The tutor asked: "{state['probe_question']}"
     The student replied: "{state['student_message']}"
+
     Classify this reply as one of two categories:
     - "genuine" — the student attempts to reason through the question, even imperfectly,
       or asks a genuine clarifying question of their own.
     - "bypass" — the student demands the direct answer, restates without engaging, or
-      otherwise avoids reasoning through the question.
+      otherwise avoids ever reasoning through the problem.
+
+    Also set wants_to_proceed to true if the student is signaling -- in their own
+    words, regardless of whether you just offered this as an option -- that they want
+    to stop discussing and go try implementing their own understanding in code (e.g.
+    "let me code this up", "I'm going to try it", "I think I've got it, let's move
+    on"). This is different from demanding the tutor reveal or confirm the answer
+    ("just tell me", "is this right?") -- that's still bypass, not a proceed signal,
+    no matter how it's phrased.
+    {genuine_shown_context}
 
     Then, write a short one-sentence summary of what happened this turn, including a short
     direct quote from the student's reply if it's the specific reason behind your
@@ -156,6 +209,11 @@ def evaluate_reasoning(state: GraphState) -> GraphState:
 
     evaluation = model.with_structured_output(ReasoningEvaluation).invoke(prompt)
     reasoning_state = ReasoningState(evaluation.classification)
+    # Belt-and-suspenders: bypass always wins even if the model mis-flags
+    # wants_to_proceed on a "just tell me" style reply -- demanding the answer never
+    # counts as a legitimate exit, no matter the phrasing.
+    wants_to_proceed = evaluation.wants_to_proceed and reasoning_state != ReasoningState.BYPASS
+    genuine_shown_next = genuine_shown or reasoning_state == ReasoningState.GENUINE
 
     mark_attempt_engaged(state["attempt_id"])
     turn_number = count_turns_for_attempt(state["attempt_id"]) + 1
@@ -178,12 +236,63 @@ def evaluate_reasoning(state: GraphState) -> GraphState:
         created_at=datetime.now()
     ))
 
+    if wants_to_proceed:
+        # Earned or demonstrated-in-the-moment readiness -- let them proceed. No
+        # further probe; pending clears so idle detection resumes meaning "gone quiet"
+        # again instead of "ignored a reply."
+        return {
+            "reasoning_state": reasoning_state.value,
+            "turn_summary": evaluation.summary,
+            "engagement_occurred": True,
+            "pending_response_to": None,
+            "is_opening_probe": False,
+            "genuine_reasoning_shown": genuine_shown_next,
+        }
+
+    # Either remaining classification still needs a reply -- silence here is what made
+    # a genuine answer indistinguishable from being ignored, which in turn made the next
+    # idle check misfire a "you paused" message at a student who was actually just
+    # waiting on the tutor. Both branches generate a fresh probe_question and re-arm
+    # pending_response_to="probe" so the next reply gets evaluated the same way.
+    if reasoning_state == ReasoningState.BYPASS:
+        # A bypass reply leaves the original probe unanswered -- acknowledge it briefly
+        # and redirect back to that question instead of moving on. Doesn't reveal
+        # anything or scold -- just confirms the agent noticed and is still waiting.
+        followup_prompt = f"""You are a Socratic tutor. You asked the student: "{state['probe_question']}"
+        Instead of engaging with that question, the student said: "{state['student_message']}"
+
+        Write a single short, gentle sentence that acknowledges what they said without
+        judgment, and redirects them back to your original question. Do not answer the
+        question yourself, do not lecture or scold, and do not repeat the full original
+        question verbatim -- just a brief, warm nudge back to it."""
+    else:
+        # A genuine reply gets a real reply back: a brief acknowledgment (never
+        # confirming correctness -- that stays off-limits) plus exactly one further
+        # question. A student who wants to stop here can and will say so in their own
+        # words (handled above via wants_to_proceed), so this doesn't need to manufacture
+        # an explicit either/or every time -- that just made the dialogue feel stilted.
+        followup_prompt = f"""You are a Socratic tutor. You asked the student: "{state['probe_question']}"
+        The student reasoned through it and replied: "{state['student_message']}"
+
+        Write a short response with two parts:
+        1. Briefly acknowledge their reasoning without confirming whether it's correct
+           or complete, and without revealing or implying the answer.
+        2. Ask exactly one further question that surfaces a genuinely relevant angle
+           they haven't considered yet -- an edge case, a complexity concern, a
+           specific detail worth thinking about. If there's honestly nothing
+           substantive left worth probing, ask directly whether they feel ready to move
+           on to code instead of manufacturing a question for its own sake."""
+
+    followup = model.invoke(followup_prompt)
+
     return {
-        "reasoning_state": reasoning_state,
+        "reasoning_state": reasoning_state.value,
         "turn_summary": evaluation.summary,
         "engagement_occurred": True,
-        "pending_response_to": None,
+        "probe_question": followup.content,
+        "pending_response_to": "probe",
         "is_opening_probe": False,
+        "genuine_reasoning_shown": genuine_shown_next,
     }
 
 
@@ -238,9 +347,11 @@ def run_intervention(state: GraphState, tier: Literal["checkin", "hint"]) -> Gra
         prompt = f"""The student appears to have paused while working on this problem:
         {state['problem_description']}
 
-        Write a brief, friendly check-in message asking why they've paused — without
+        Write a brief, warm check-in message asking why they've paused — without
         assuming they're stuck, since they may just be thinking or took a short break.
-        Invite them to share what's going on."""
+        Invite them to share what's going on. Keep the tone professional and direct,
+        matching a thoughtful tutor — no emoji, no exclamation-heavy or overly casual
+        phrasing."""
     else:
         hint_cap = state.get("hint_cap", STARTING_HINT_CAP)
         if hint_cap <= 1:
@@ -546,6 +657,14 @@ def route_turn(state: GraphState) -> str:
             return "evaluate_reasoning"
         return "probe"  # spontaneous message, or a reply to a check-in/hint -- fresh probe cycle
 
+    # Once escalated, the agent stops proactively pushing -- no further check-ins,
+    # hints, or opening probes -- for the rest of the attempt. The handoff to a human
+    # is meant to be a genuine pause, not something routed around in the background.
+    # Not a permanent lockout: a real student message is handled above, before this
+    # gate, so normal tutoring still resumes if the student re-engages.
+    if state.get("escalated"):
+        return "end"
+
     # No message, no run test, no submit this invocation -- a heartbeat/idle check.
     if pending == "hint":
         return "escalate" if struggling else "end"
@@ -608,32 +727,30 @@ graph_builder.add_edge("update", "decide")
 graph_builder.add_edge("decide", "serve")
 graph_builder.add_edge("serve", END)
 
-# TODO: real checkpointer for pause/resume persistence, e.g.
-#   from langgraph.checkpoint.postgres import PostgresSaver
-#   graph = graph_builder.compile(checkpointer=PostgresSaver(...))
-# keyed by attempt_id as the thread_id. Short-term/live-conversation state
+# Real checkpointer for pause/resume persistence, keyed by attempt_id as the
+# thread_id -- callers pass config={"configurable": {"thread_id": attempt_id}}
+# to graph.invoke()/graph.stream(). Short-term/live-conversation state
 # (pending_response_to, probe_question, tier, hint_cap, hints_used,
-# engagement_occurred, struggle_detected, mastery_score, dependency_score) belongs
-# in that checkpointed state across invocations, NOT reconstructed from the database
-# on every turn. Right now the caller must pass the full state back in on every
-# invoke() -- that's the gap this stub marks.
-graph = graph_builder.compile()
+# engagement_occurred, struggle_detected, mastery_score, dependency_score,
+# is_opening_probe) now lives here across invocations instead of being
+# reconstructed from the database on every turn: a caller only needs to supply
+# the fields specific to this invocation (student_message, student_code,
+# idle_seconds, run_test_clicked, etc.) plus the identity/starting fields on
+# the one call that opens a brand new attempt -- LangGraph merges partial
+# state updates into whatever this thread_id already has checkpointed.
+#
+# autocommit/prepare_threshold=0/dict_row match what PostgresSaver itself uses
+# internally (see PostgresSaver.from_conn_string) and are required for it to
+# work correctly against the pool.
+_checkpoint_pool = ConnectionPool(
+    conninfo=checkpoint_db_url,
+    max_size=10,
+    kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+    open=True,
+)
+checkpointer = PostgresSaver(_checkpoint_pool)
+checkpointer.setup()  # no-op after the first run; creates/migrates checkpoint tables.
 
-if __name__ == "__main__":
-    result = graph.invoke({
-        "student_id": 1,
-        "topic_id": 7,
-        "problem_id": 4,
-        "attempt_id": 1,
-        "problem_description": "Write a function that returns the factorial of a number using recursion.",
-        "tier": 1,
-        "hint_cap": STARTING_HINT_CAP,
-        "hints_used": 0,
-        "engagement_occurred": False,
-        "struggle_detected": False,
-        "pending_response_to": None,
-        "student_message": "I think I should use a for loop here.",
-        "idle_seconds": 0,
-        "repeated_edit_count": 0,
-    })
-    print(result)
+graph = graph_builder.compile(checkpointer=checkpointer)
+
+
