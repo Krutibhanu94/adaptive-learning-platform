@@ -28,6 +28,10 @@
   @apply self-start bg-white text-black;
 }
 
+.tutor__error {
+  @apply shrink-0 border-t-2 border-black bg-[#FDECEC] px-3 py-2 text-sm font-bold text-[#B3261E];
+}
+
 .tutor__input-row {
   @apply flex shrink-0 items-center gap-2 border-t-2 border-black p-2;
 }

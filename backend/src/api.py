@@ -23,7 +23,7 @@ class ChatRequest(BaseModel):
     message: str
 
 class TurnRequest(BaseModel):
-    event_type: Literal["message", "code_update", "heartbeat"]
+    event_type: Literal["message", "code_update", "heartbeat", "resume"]
     message: str | None = None
     code: str | None = None
 
@@ -55,6 +55,26 @@ async def start_attempt(student_id: int, topic_id: int):
         if not problem_rows:
             raise HTTPException(status_code=404, detail="Attempt references a problem that no longer exists")
         problem = problem_rows[0]
+
+        # Reopening this attempt is itself activity -- reset the clock so a real-world
+        # gap since the student was last here (closed tab, navigated away) doesn't get
+        # misread as idle struggle by the very next heartbeat. idle_seconds is reset
+        # explicitly too, not just the timestamp: route_turn evaluates on every
+        # invoke(), so a bare last_activity_at update would still leave a stale
+        # idle_seconds from a prior heartbeat in play for this call.
+        graph.invoke(
+            {
+                "student_message": None,
+                "code_changed": False,
+                "run_test_clicked": False,
+                "run_test_result": None,
+                "submit_clicked": False,
+                "idle_seconds": 0,
+                "last_activity_at": datetime.now().isoformat(),
+            },
+            {"configurable": {"thread_id": str(existing["attempt_id"])}},
+        )
+
         return {
             "found": True,
             "attempt_id": existing["attempt_id"],
@@ -113,6 +133,46 @@ async def start_attempt(student_id: int, topic_id: int):
         "problem_description": next_problem["problem_description"],
     }
 
+@router.get("/attempts/{attempt_id}")
+async def get_attempt_state(attempt_id: int):
+    attempt = get_attempt(attempt_id)
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+
+    problem_rows = get_problem(attempt["problem_id"])
+    problem = problem_rows[0] if problem_rows else None
+
+    config = {"configurable": {"thread_id": str(attempt_id)}}
+    state = graph.get_state(config).values
+
+    # There is no verbatim transcript to replay here -- interaction_log stores
+    # LLM-generated turn summaries for analytics, not the raw probe/message text, and
+    # probe_node itself never logs a row at all. So this recovers the single currently
+    # outstanding question (if any), not a full back-and-forth history. A real chat
+    # transcript would need its own persisted message log; flagged, not built here.
+    pending = state.get("pending_response_to")
+    if pending == "probe":
+        current_message = state.get("probe_question")
+    elif pending in ("checkin", "hint"):
+        current_message = state.get("intervention_message")
+    else:
+        current_message = None
+
+    return {
+        "attempt_id": attempt_id,
+        "problem_id": problem["problem_id"] if problem else attempt["problem_id"],
+        "problem_name": problem["problem_name"] if problem else None,
+        "problem_description": problem["problem_description"] if problem else None,
+        "pending_response_to": pending,
+        "current_message": current_message,
+        "engagement_occurred": state.get("engagement_occurred", attempt["engagement_occurred"]),
+        "escalated": state.get("escalated", attempt["escalated"]),
+        "escalation_reason": state.get("escalation_reason", attempt["escalation_reason"]),
+        "tier": state.get("tier", attempt["tier"]),
+        "hint_cap": state.get("hint_cap", attempt["hint_cap"]),
+        "hints_used": state.get("hints_used", attempt["hints_used"]),
+    }
+
 @router.post("/attempts/{attempt_id}/turn")
 async def turn(attempt_id: int, request: TurnRequest):
     config = {"configurable": {"thread_id": str(attempt_id)}}
@@ -149,6 +209,15 @@ async def turn(attempt_id: int, request: TurnRequest):
         turn_input["repeated_edit_count"] = (
             0 if code_changed else current.get("repeated_edit_count", 0) + 1
         )
+
+    elif request.event_type == "resume":
+        # The student has just reopened/returned to this attempt (Workspace mounted --
+        # a fresh visit, a browser back/forward, or a refresh that bypassed /start's own
+        # resume branch). No student_message/student_code here, so this can't generate a
+        # probe on its own -- it only resets the clock, the same fix /start's resume
+        # branch applies, for the paths that don't go through /start at all.
+        turn_input["idle_seconds"] = 0
+        turn_input["last_activity_at"] = now.isoformat()
 
     else:  # heartbeat -- a pure elapsed-time check, not new activity itself; leaves
            # repeated_edit_count and last_activity_at untouched.

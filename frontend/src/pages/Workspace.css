@@ -45,5 +45,5 @@
 }
 
 .workspace__chat {
-  @apply min-h-0 border-t-4 border-black p-2 sm:basis-1/4 sm:border-t-0 sm:border-l-4 sm:p-4;
+  @apply h-full min-h-0 border-t-4 border-black p-2 sm:basis-1/4 sm:border-t-0 sm:border-l-4 sm:p-4;
 }

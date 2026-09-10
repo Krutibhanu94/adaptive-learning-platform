@@ -5,40 +5,15 @@ import { Input } from "@/components/ui/input"
 
 import "./tutor.css"
 
-function Tutor({ attemptId }) {
-  const [messages, setMessages] = useState([])
+function Tutor({ messages, sending, error, fatal, onSendMessage }) {
   const [draft, setDraft] = useState("")
-  const [sending, setSending] = useState(false)
 
-  const handleSend = async () => {
+  const handleSend = () => {
     const trimmed = draft.trim()
-    if (!trimmed || !attemptId || sending) return
+    if (!trimmed || sending || fatal) return
 
-    setMessages((prev) => [...prev, { role: "student", text: trimmed }])
     setDraft("")
-    setSending(true)
-
-    try {
-      const response = await fetch(`http://localhost:8000/attempts/${attemptId}/turn`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ event_type: "message", message: trimmed }),
-      })
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
-      }
-
-      const data = await response.json()
-
-      if (data.message) {
-        setMessages((prev) => [...prev, { role: "tutor", text: data.message }])
-      }
-    } catch (error) {
-      console.error("Error sending message to tutor:", error)
-    } finally {
-      setSending(false)
-    }
+    onSendMessage(trimmed)
   }
 
   const handleKeyDown = (event) => {
@@ -61,6 +36,8 @@ function Tutor({ attemptId }) {
         ))}
       </div>
 
+      {error && <div className="tutor__error">{error}</div>}
+
       <div className="tutor__input-row">
         <Input
           type="text"
@@ -68,9 +45,9 @@ function Tutor({ attemptId }) {
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={handleKeyDown}
-          disabled={sending}
+          disabled={sending || fatal}
         />
-        <Button type="button" className="tutor__send" onClick={handleSend} disabled={sending}>
+        <Button type="button" className="tutor__send" onClick={handleSend} disabled={sending || fatal}>
           Send
         </Button>
       </div>
