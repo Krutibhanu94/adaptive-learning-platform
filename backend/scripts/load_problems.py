@@ -55,6 +55,10 @@ for problem in ds:
     problem_description = problem["problem_description"]
     test_cases = json.dumps(problem["input_output"])
     tier = get_tier(problem["difficulty"])
+    starter_code = problem["starter_code"]
+    entry_point = problem["entry_point"]
+    test_harness_prelude = problem["prompt"]
+    test_harness = problem["test"]
 
     for topic_name in matched_topics:
         topic_id = topic_name_to_id.get(topic_name)
@@ -65,6 +69,10 @@ for problem in ds:
             test_cases=test_cases,
             tier=tier,
             topic_id=topic_id,
+            starter_code=starter_code,
+            entry_point=entry_point,
+            test_harness_prelude=test_harness_prelude,
+            test_harness=test_harness,
         )
 
         insert_problem(problem_entry)

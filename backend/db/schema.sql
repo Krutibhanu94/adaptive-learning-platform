@@ -25,6 +25,23 @@ CREATE TABLE IF NOT EXISTS Problems (
     problem_name TEXT NOT NULL,
     problem_description TEXT NOT NULL,
     test_cases JSONB NOT NULL,
+    starter_code TEXT,
+    entry_point TEXT,
+    -- Imports and helper class/function definitions (List/Optional typing imports,
+    -- ListNode/TreeNode, inf = float('inf'), etc.) that starter_code and test_cases
+    -- assume are already in scope -- sourced from the dataset's own "prompt" field.
+    -- Needed for the correctness checker's harness to actually run problems that use
+    -- these structures; without it, e.g. any linked-list/tree problem fails outright.
+    test_harness_prelude TEXT,
+    -- The dataset's own correctness-check function (a `check(candidate)` with a
+    -- sequence of asserts), sourced from its "test" field. This is the actual
+    -- correctness mechanism the checker runs -- test_cases (the input/output pairs
+    -- above) turned out insufficient on their own: they don't know to wrap arguments
+    -- like linked lists via the prelude's list_node()/is_same_list() helpers, which
+    -- check(candidate) already does correctly per-problem. test_cases is kept for its
+    -- own separate purpose -- showing example cases to students in the test-output
+    -- panel -- not for checking correctness.
+    test_harness TEXT,
     topic_id INT REFERENCES Topics(topic_id)
 );
 
