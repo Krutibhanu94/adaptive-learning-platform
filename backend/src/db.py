@@ -21,6 +21,10 @@ class ProblemInsert:
     test_cases: list
     tier: int
     topic_id: int
+    starter_code: str
+    entry_point: str
+    test_harness_prelude: str
+    test_harness: str
 
 @dataclass
 class StudentSkillStateUpdate:
@@ -104,15 +108,19 @@ def insert_problem(problem_data: ProblemInsert):
     with engine.connect() as conn:
         conn.execute(
             text("""
-            INSERT INTO problems (problem_name, problem_description, test_cases, tier, topic_id)
-            VALUES (:problem_name, :problem_description, :test_cases, :tier, :topic_id)
+            INSERT INTO problems (problem_name, problem_description, test_cases, tier, topic_id, starter_code, entry_point, test_harness_prelude, test_harness)
+            VALUES (:problem_name, :problem_description, :test_cases, :tier, :topic_id, :starter_code, :entry_point, :test_harness_prelude, :test_harness)
             """),
             {
                 "problem_name": problem_data.problem_name,
                 "problem_description": problem_data.problem_description,
                 "test_cases": problem_data.test_cases,
                 "tier": problem_data.tier,
-                "topic_id": problem_data.topic_id
+                "topic_id": problem_data.topic_id,
+                "starter_code": problem_data.starter_code,
+                "entry_point": problem_data.entry_point,
+                "test_harness_prelude": problem_data.test_harness_prelude,
+                "test_harness": problem_data.test_harness
             }
         )
         conn.commit()
