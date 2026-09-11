@@ -2,6 +2,8 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
+from starlette.concurrency import run_in_threadpool
+from checker import run_correctness_check
 from config import model
 from db import (
     ProblemAttemptInsert,
@@ -23,9 +25,22 @@ class ChatRequest(BaseModel):
     message: str
 
 class TurnRequest(BaseModel):
-    event_type: Literal["message", "code_update", "heartbeat", "resume"]
+    event_type: Literal["message", "code_update", "heartbeat", "resume", "run_test", "submit"]
     message: str | None = None
     code: str | None = None
+
+async def _run_checker(problem: dict, code: str) -> dict:
+    # Off the event loop -- a correctness check can take up to the checker's own
+    # timeout (currently 10s), and this is plain synchronous code (the docker SDK, not
+    # asyncio), so calling it directly here would stall every other concurrent request
+    # this worker is handling for that whole time.
+    try:
+        return await run_in_threadpool(run_correctness_check, problem, code)
+    except Exception as e:
+        return {
+            "all_passed": False,
+            "failures": [{"error": f"Correctness checker unavailable: {type(e).__name__}: {e}"}],
+        }
 
 router = APIRouter()
 
@@ -81,6 +96,7 @@ async def start_attempt(student_id: int, topic_id: int):
             "problem_id": problem["problem_id"],
             "problem_name": problem["problem_name"],
             "problem_description": problem["problem_description"],
+            "test_cases": problem["test_cases"],
         }
 
     skill_state = get_student_skill_state(student_id, topic_id)
@@ -131,6 +147,7 @@ async def start_attempt(student_id: int, topic_id: int):
         "problem_id": next_problem["problem_id"],
         "problem_name": next_problem["problem_name"],
         "problem_description": next_problem["problem_description"],
+        "test_cases": next_problem["test_cases"],
     }
 
 @router.get("/attempts/{attempt_id}")
@@ -163,6 +180,7 @@ async def get_attempt_state(attempt_id: int):
         "problem_id": problem["problem_id"] if problem else attempt["problem_id"],
         "problem_name": problem["problem_name"] if problem else None,
         "problem_description": problem["problem_description"] if problem else None,
+        "test_cases": problem["test_cases"] if problem else None,
         "pending_response_to": pending,
         "current_message": current_message,
         "engagement_occurred": state.get("engagement_occurred", attempt["engagement_occurred"]),
@@ -219,6 +237,44 @@ async def turn(attempt_id: int, request: TurnRequest):
         turn_input["idle_seconds"] = 0
         turn_input["last_activity_at"] = now.isoformat()
 
+    elif request.event_type == "run_test":
+        problem_rows = get_problem(current["problem_id"])
+        if not problem_rows:
+            raise HTTPException(status_code=404, detail="Problem for this attempt no longer exists")
+        run_test_result = await _run_checker(problem_rows[0], request.code)
+
+        turn_input["student_code"] = request.code
+        turn_input["last_student_code"] = request.code
+        turn_input["run_test_clicked"] = True
+        turn_input["run_test_result"] = run_test_result
+        turn_input["idle_seconds"] = 0
+        turn_input["last_activity_at"] = now.isoformat()
+        turn_input["repeated_edit_count"] = 0
+
+    elif request.event_type == "submit":
+        # Defensive backstop -- route_turn already no-ops silently if this isn't
+        # satisfied (engagement gate), but the primary enforcement is the frontend
+        # disabling Submit; a silent no-op here would be a confusing API response, so
+        # reject explicitly instead.
+        if not current.get("engagement_occurred", False):
+            raise HTTPException(
+                status_code=409,
+                detail="Engagement gate not satisfied -- at least one probe/evaluate exchange must occur before submitting.",
+            )
+
+        problem_rows = get_problem(current["problem_id"])
+        if not problem_rows:
+            raise HTTPException(status_code=404, detail="Problem for this attempt no longer exists")
+        run_test_result = await _run_checker(problem_rows[0], request.code)
+
+        turn_input["student_code"] = request.code
+        turn_input["last_student_code"] = request.code
+        turn_input["submit_clicked"] = True
+        turn_input["run_test_result"] = run_test_result
+        turn_input["idle_seconds"] = 0
+        turn_input["last_activity_at"] = now.isoformat()
+        turn_input["repeated_edit_count"] = 0
+
     else:  # heartbeat -- a pure elapsed-time check, not new activity itself; leaves
            # repeated_edit_count and last_activity_at untouched.
         last_activity_raw = current.get("last_activity_at")
@@ -244,7 +300,7 @@ async def turn(attempt_id: int, request: TurnRequest):
     elif result.get("intervention_message") != prior_intervention_message:
         new_message = result.get("intervention_message")
 
-    return {
+    response = {
         "message": new_message,
         "pending_response_to": result.get("pending_response_to"),
         "engagement_occurred": result.get("engagement_occurred", False),
@@ -254,6 +310,24 @@ async def turn(attempt_id: int, request: TurnRequest):
         "hint_cap": result.get("hint_cap"),
         "hints_used": result.get("hints_used", 0),
     }
+
+    # run_test_result/final_result/next_problem are sticky in the checkpoint once set
+    # (like probe_question/intervention_message), so they're only included in the
+    # response for the event types that actually just produced them this call --
+    # otherwise an unrelated later heartbeat/message would re-surface a stale test
+    # result from a previous run_test/submit.
+    if request.event_type in ("run_test", "submit"):
+        response["run_test_result"] = run_test_result
+
+    if request.event_type == "submit":
+        response["final_result"] = result.get("final_result")
+        response["next_problem"] = {
+            "problem_id": result.get("problem_id"),
+            "problem_name": result.get("problem_name"),
+            "problem_description": result.get("problem_description"),
+        }
+
+    return response
 
 @router.post("/ping")
 async def ping(request: ChatRequest):

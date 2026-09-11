@@ -47,6 +47,12 @@ class GraphState(TypedDict, total=False):
     problem_id: int
     attempt_id: int
     problem_description: str
+    # Not read anywhere within agent.py itself -- only ever set by serve_node, to be
+    # relayed back through the API response for the frontend to display. Was missing
+    # from this schema entirely; LangGraph only tracks channels for declared keys, so
+    # serve_node's "problem_name" was being silently dropped, never actually reaching
+    # callers despite being returned.
+    problem_name: str | None
 
     # This invocation's input -- one external event per graph run.
     student_message: str | None
@@ -101,7 +107,10 @@ class GraphState(TypedDict, total=False):
     bypass_count: int
     escalated: bool
     escalation_reason: str | None
-    final_result: SubmitResult
+    # Plain "pass"/"fail" string, not the SubmitResult enum -- same reasoning as
+    # reasoning_state above: never read back as an enum, and the checkpointer's msgpack
+    # serializer doesn't natively support custom Enum types.
+    final_result: str
 
 
 class ReasoningEvaluation(BaseModel):
@@ -518,9 +527,12 @@ def update_node(state: GraphState) -> GraphState:
 
 def decide_node(state: GraphState) -> GraphState:
     attempt = get_attempt(state["attempt_id"])
+    # None on a student's genuinely first-ever attempt at this topic -- no row has been
+    # written yet (the first write happens below, via update_student_skill_state).
+    # Same defaults /start already uses when seeding a brand new attempt.
     skill_state = get_student_skill_state(state["student_id"], state["topic_id"])
-    current_tier = skill_state["current_tier"]
-    hint_cap = skill_state["hint_cap"]
+    current_tier = skill_state["current_tier"] if skill_state else 1
+    hint_cap = skill_state["hint_cap"] if skill_state else STARTING_HINT_CAP
     hints_used = attempt["hints_used"]
 
     escalated = False
@@ -613,7 +625,7 @@ def decide_node(state: GraphState) -> GraphState:
         "hint_cap": new_hint_cap,
         "escalated": escalated,
         "escalation_reason": escalation_reason,
-        "final_result": final_result,
+        "final_result": final_result.value,
     }
 
 
