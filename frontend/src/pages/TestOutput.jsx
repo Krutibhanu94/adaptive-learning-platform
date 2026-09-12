@@ -32,9 +32,40 @@ function TestFailure({ failure }) {
 
 // testCases holds every case the dataset provides (sometimes dozens) -- only shown
 // before any Run Test click, so just the first few as LeetCode-style examples. After a
-// click, testResult replaces this entirely: pass, or the one case that failed with rich
-// detail (the checker only ever reports the first failure, not a per-case breakdown --
+// click, testResult replaces this entirely: pass (with those same examples' actual
+// output, see TestExamplesPassed below), or the one case that failed with rich detail
+// (the checker only ever reports the first failure, not a per-case breakdown --
 // check(candidate)'s asserts halt at the first one, by design).
+function TestExamplesPassed({ examples }) {
+  return (
+    <div className="test-output__examples">
+      <div className="test-output__status test-output__status--pass">All tests passed</div>
+      {(examples ?? []).map((example, index) => (
+        <div key={index} className="test-output__example">
+          <div className="test-output__example-label">Example {index + 1}</div>
+          <div className="test-output__example-row">
+            <span className="test-output__example-key">Input:</span>
+            <code className="test-output__example-value">{example.input}</code>
+          </div>
+          <div className="test-output__example-row">
+            <span className="test-output__example-key">Output:</span>
+            <code className="test-output__example-value">{example.output}</code>
+          </div>
+          <div className="test-output__example-row">
+            <span className="test-output__example-key">Your output:</span>
+            {/* actual is null when this example's input couldn't be reconstructed from its
+                display string (e.g. a structural type the harness's naive parser can't
+                rebuild) -- not a failure, just not available for this one example. */}
+            <code className="test-output__example-value">
+              {example.actual ?? "(unavailable for this example)"}
+            </code>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function TestOutput({ testCases, testing, testResult }) {
   const exampleCases = (testCases ?? []).slice(0, 3)
 
@@ -51,7 +82,7 @@ function TestOutput({ testCases, testing, testResult }) {
 
         {!testing && testResult && (
           testResult.all_passed ? (
-            <div className="test-output__status test-output__status--pass">All tests passed</div>
+            <TestExamplesPassed examples={testResult.examples} />
           ) : (
             <TestFailure failure={testResult.failures?.[0]} />
           )

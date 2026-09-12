@@ -31,7 +31,7 @@ def _ensure_image(client):
         client.images.build(path=SANDBOX_DIR, tag=SANDBOX_IMAGE_TAG, rm=True)
 
 
-def _build_harness(prelude: str, student_code: str, entry_point: str, test_harness: str) -> str:
+def _build_harness(prelude: str, student_code: str, entry_point: str, test_harness: str, examples: list) -> str:
     # prelude and test_harness come from the trusted, dataset-seeded problems table --
     # running them is safe in that sense. The actual security boundary is the container
     # itself (no network, resource caps, non-root, ephemeral), not anything in this
@@ -45,6 +45,18 @@ def _build_harness(prelude: str, student_code: str, entry_point: str, test_harne
     # args/kwargs/result as it happens, so when an assert fails we can report exactly
     # what the student's code actually returned for that case, not just that it didn't
     # match -- check(candidate)'s own asserts don't preserve that on their own.
+    #
+    # examples (the same LeetCode-style input/output strings the frontend shows *before*
+    # any run) get a second, best-effort pass only when the full suite already passed:
+    # each "Input:" string is parsed into real call arguments with eval() -- safe here for
+    # the same reason as everywhere else in this script, since examples are dataset-
+    # provided, not student-provided -- and the candidate is called directly so the
+    # actual output can be shown alongside the example, without claiming a per-example
+    # pass/fail verdict (this harness has no reliable way to compare a structural return
+    # type like a linked list or tree against the example's expected-output string the
+    # same way check(candidate) itself does internally). A parse/type mismatch (e.g. an
+    # example whose input is itself a structural type the naive eval-based parser can't
+    # reconstruct) degrades that one example to "unavailable" rather than failing the run.
     return f"""
 import json
 import traceback
@@ -66,9 +78,55 @@ candidate = _wrap_candidate({entry_point})
 
 {test_harness}
 
+def _parse_example_input(input_str):
+    kwargs = {{}}
+    parts = []
+    depth = 0
+    in_str = None
+    current = []
+    for ch in input_str:
+        if in_str:
+            current.append(ch)
+            if ch == in_str:
+                in_str = None
+            continue
+        if ch in "\\"'":
+            in_str = ch
+            current.append(ch)
+            continue
+        if ch in "([{{":
+            depth += 1
+        elif ch in ")]}}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        parts.append("".join(current))
+    for part in parts:
+        if "=" not in part:
+            continue
+        key, val = part.split("=", 1)
+        kwargs[key.strip()] = eval(val.strip())
+    return kwargs
+
+def _run_examples():
+    results = []
+    for example in json.loads({json.dumps(json.dumps(examples))}):
+        entry = {{"input": example.get("input"), "output": example.get("output"), "actual": None}}
+        try:
+            parsed_args = _parse_example_input(example.get("input") or "")
+            entry["actual"] = repr(candidate(**parsed_args))
+        except Exception:
+            entry["actual"] = None
+        results.append(entry)
+    return results
+
 try:
     check(candidate)
-    print(json.dumps({{"all_passed": True, "failure": None}}))
+    print(json.dumps({{"all_passed": True, "failure": None, "examples": _run_examples()}}))
 except Exception as e:
     tb = traceback.extract_tb(e.__traceback__)
     source_line = tb[-1].line if tb else None
@@ -91,17 +149,23 @@ def run_correctness_check(problem: dict, student_code: str) -> dict:
     Runs student_code against problem's test_harness (the dataset's own
     check(candidate) correctness function) inside an isolated, resource-limited Docker
     container (no network, memory/CPU caps, non-root, read-only root filesystem,
-    auto-removed after the run). Returns {"all_passed": bool, "failures": [...]},
+    auto-removed after the run). Returns {"all_passed": bool, "failures": [...], "examples": [...] or None},
     matching the shape probe_node already expects from run_test_result -- "failures"
     holds zero or one entries (the first case that failed, with rich detail: the
     assertion source, the call args/kwargs, and what the student's code actually
-    returned), not one entry per test case.
+    returned), not one entry per test case. "examples" is only populated when
+    all_passed is True -- the same (up to 3) example cases the frontend shows before any
+    run, each with the actual output the candidate produced for it (or None if that one
+    example's input couldn't be reconstructed from its display string). No per-example
+    pass/fail verdict -- see _build_harness for why.
     """
+    examples = (problem.get("test_cases") or [])[:3]
     harness_source = _build_harness(
         problem["test_harness_prelude"],
         student_code,
         problem["entry_point"],
         problem["test_harness"],
+        examples,
     )
 
     client = _get_client()
@@ -154,7 +218,7 @@ def run_correctness_check(problem: dict, student_code: str) -> dict:
             }
 
         if parsed.get("all_passed"):
-            return {"all_passed": True, "failures": []}
+            return {"all_passed": True, "failures": [], "examples": parsed.get("examples") or []}
         failure = parsed.get("failure")
         return {"all_passed": False, "failures": [failure] if failure else []}
     finally:

@@ -35,6 +35,7 @@ class StudentSkillStateUpdate:
     mastery_score: float
     dependency_score: float
     hint_cap: int
+    attempts_since_tier_decision: int
     updated_at: str
 
 @dataclass
@@ -151,6 +152,7 @@ def get_topic_progress(student_id: int, topic_id: int):
         result = conn.execute(
             text("""
             SELECT DISTINCT ON (p.problem_id) p.problem_id, p.problem_name,
+                pa.attempt_id,
                 pa.result AS submit_result,
                 COALESCE(pa.submitted_at, pa.started_at) AS created_at
             FROM problem_attempts pa
@@ -340,16 +342,17 @@ def update_student_skill_state(update: StudentSkillStateUpdate):
             text("""
             INSERT INTO student_skill_state (
                 student_id, topic_id, current_tier, mastery_score,
-                dependency_score, hint_cap, updated_at
+                dependency_score, hint_cap, attempts_since_tier_decision, updated_at
             ) VALUES (
                 :student_id, :topic_id, :current_tier, :mastery_score,
-                :dependency_score, :hint_cap, :updated_at
+                :dependency_score, :hint_cap, :attempts_since_tier_decision, :updated_at
             )
             ON CONFLICT (student_id, topic_id) DO UPDATE SET
                 current_tier = EXCLUDED.current_tier,
                 mastery_score = EXCLUDED.mastery_score,
                 dependency_score = EXCLUDED.dependency_score,
                 hint_cap = EXCLUDED.hint_cap,
+                attempts_since_tier_decision = EXCLUDED.attempts_since_tier_decision,
                 updated_at = EXCLUDED.updated_at
             """),
             {
@@ -359,6 +362,7 @@ def update_student_skill_state(update: StudentSkillStateUpdate):
                 "mastery_score": update.mastery_score,
                 "dependency_score": update.dependency_score,
                 "hint_cap": update.hint_cap,
+                "attempts_since_tier_decision": update.attempts_since_tier_decision,
                 "updated_at": update.updated_at
             }
         )

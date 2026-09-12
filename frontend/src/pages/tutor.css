@@ -5,11 +5,14 @@
 }
 
 .tutor__bar {
-  @apply flex items-center gap-3 border-b-4 border-black px-2 py-3 sm:px-4;
+  /* h-16, matching .workspace__header exactly -- see its comment. Background matches
+     .app-bar's (components/appBar.css). */
+  @apply flex h-16 items-center gap-3 border-b-4 border-black bg-[#730FC3] px-2 sm:px-4;
 }
 
 .tutor__header {
-  @apply m-0 text-xl font-black sm:text-2xl;
+  /* Matches .app-bar__logo's color (components/appBar.css). */
+  @apply m-0 text-xl font-black text-[#f7b801] sm:text-2xl;
 }
 
 .tutor__messages {
@@ -21,7 +24,7 @@
 }
 
 .tutor__message--student {
-  @apply self-end bg-[#3d348b] text-white;
+  @apply self-end bg-[#E8E4DC] text-black;
 }
 
 .tutor__message--tutor {

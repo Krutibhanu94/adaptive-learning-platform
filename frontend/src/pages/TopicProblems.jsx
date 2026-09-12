@@ -105,10 +105,18 @@ function TopicProblems() {
       <ItemGroup className="topic-problems__list">
         {problems.map((problem, index) => {
           const status = STATUS_ICON[problem.submit_result] ?? STATUS_ICON.no_submission
+          // Only the problem with a currently open (not-yet-submitted) attempt is
+          // resumable directly from this list -- anything else needs a fresh attempt via
+          // Start Problem instead.
+          const isResumable = problem.submit_result === "no_submission" && problem.attempt_id
 
           return (
             <Fragment key={problem.problem_id}>
-              <Item variant="default" className="topic-problems__item">
+              <Item
+                variant="default"
+                className={`topic-problems__item ${isResumable ? "topic-problems__item--resumable" : ""}`}
+                onClick={isResumable ? () => navigate(`/${topicId}/workspace/${problem.attempt_id}`) : undefined}
+              >
                 <ItemMedia variant="icon">
                   <status.Icon className={status.className} />
                 </ItemMedia>
@@ -116,7 +124,9 @@ function TopicProblems() {
                   <ItemTitle>{problem.problem_name}</ItemTitle>
                 </ItemContent>
                 <ItemActions>
-                  <ChevronRight className="topic-problems__item-arrow" />
+                  <ChevronRight
+                    className={`topic-problems__item-arrow ${isResumable ? "topic-problems__item-arrow--active" : ""}`}
+                  />
                 </ItemActions>
               </Item>
 

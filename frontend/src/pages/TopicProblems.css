@@ -36,6 +36,14 @@
   @apply rounded-none border-none bg-transparent px-1 py-3 font-bold text-black shadow-none;
 }
 
+.topic-problems__item--resumable {
+  @apply cursor-pointer rounded-md transition-colors hover:bg-[#EEEEFF];
+}
+
 .topic-problems__item-arrow {
-  @apply size-5 shrink-0 text-black;
+  @apply size-5 shrink-0 text-[#B0B0B0];
+}
+
+.topic-problems__item-arrow--active {
+  @apply text-[#3d348b];
 }
