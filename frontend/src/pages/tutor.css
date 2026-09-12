@@ -31,6 +31,10 @@
   @apply self-start bg-white text-black;
 }
 
+.tutor__message code {
+  @apply rounded-sm bg-black/10 px-1 py-0.5 font-mono text-[0.85em];
+}
+
 .tutor__error {
   @apply shrink-0 border-t-2 border-black bg-[#FDECEC] px-3 py-2 text-sm font-bold text-[#B3261E];
 }
