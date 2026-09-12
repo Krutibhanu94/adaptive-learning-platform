@@ -34,6 +34,15 @@ function useTutorSession(attemptId) {
   // outright rather than silently failing over and over.
   const [error, setError] = useState(null)
   const [fatal, setFatal] = useState(false)
+  // testResult is replaced, not accumulated, on every new Run Test/Submit click -- it
+  // reflects only the most recent check, per the test-output panel's "resets on every
+  // new click" design. submitResult is set only on a successful submit (final_result +
+  // next_problem), separate from testResult since a submit result should persist even
+  // after testResult would otherwise be cleared by a subsequent unrelated action.
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [submitResult, setSubmitResult] = useState(null)
 
   const debounceRef = useRef(null)
   const busyRef = useRef(false)
@@ -77,6 +86,10 @@ function useTutorSession(attemptId) {
         fatalRef.current = true
         setFatal(true)
         setError("This problem session is no longer available. Go back and start a new attempt.")
+      } else if (err.status === 409) {
+        // Not fatal, not a connectivity issue -- the engagement gate specifically, so
+        // "retrying automatically" would be a misleading message here.
+        setError("You need to engage with the tutor before submitting.")
       } else {
         setError("Having trouble reaching the tutor -- retrying automatically.")
       }
@@ -104,15 +117,73 @@ function useTutorSession(attemptId) {
 
   const reportCodeChange = useCallback((code) => {
     if (!attemptId) return
+    console.log(
+      "[code_update] onChange fired -- (re)scheduling debounced send in",
+      CODE_DEBOUNCE_MS, "ms. code length:", code.length
+    )
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(async () => {
+      console.log("[code_update] debounce fired, sending:", code)
       try {
         const data = await sendTurn({ event_type: "code_update", code })
-        if (data) applyResult(data)
+        if (data) {
+          // code_changed/stuck_since/struggle_duration_seconds are what the backend
+          // actually computed by checking growth/similarity against its own
+          // recent_code_snapshots window -- the authoritative answer to "does this
+          // register as struggle," not just what the client sent.
+          console.log("[code_update] backend response:", {
+            code_changed: data.code_changed,
+            stuck_since: data.stuck_since,
+            struggle_duration_seconds: data.struggle_duration_seconds,
+            pending_response_to: data.pending_response_to,
+            message: data.message,
+          })
+          applyResult(data)
+        }
       } catch (error) {
         console.error("Error reporting code update:", error)
       }
     }, CODE_DEBOUNCE_MS)
+  }, [attemptId, sendTurn, applyResult])
+
+  const runTest = useCallback(async (code) => {
+    if (!attemptId) return
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const data = await sendTurn({ event_type: "run_test", code })
+      if (data) {
+        applyResult(data)
+        setTestResult(data.run_test_result ?? null)
+      }
+    } catch (error) {
+      console.error("Error running tests:", error)
+    } finally {
+      setTesting(false)
+    }
+  }, [attemptId, sendTurn, applyResult])
+
+  const submit = useCallback(async (code) => {
+    if (!attemptId) return
+    setSubmitting(true)
+    try {
+      const data = await sendTurn({ event_type: "submit", code })
+      if (data) {
+        applyResult(data)
+        setTestResult(data.run_test_result ?? null)
+        setSubmitResult({
+          finalResult: data.final_result,
+          nextProblem: data.next_problem ?? null,
+        })
+      }
+    } catch (error) {
+      // 409 (engagement gate) and any other failure are both already reflected in
+      // `error`/`fatal` by sendTurn -- nothing further to do here but avoid an unhandled
+      // rejection.
+      console.error("Error submitting:", error)
+    } finally {
+      setSubmitting(false)
+    }
   }, [attemptId, sendTurn, applyResult])
 
   // Rehydrate on load. The full transcript, if this browser has one cached from an
@@ -129,10 +200,12 @@ function useTutorSession(attemptId) {
     const cachedMessages = loadCachedMessages(attemptId)
 
     const rehydrate = async () => {
-      // Reset per-attempt error state for this fresh attemptId before anything else
-      // can set it (e.g. the resume call below, if it 404s immediately).
+      // Reset per-attempt error/test state for this fresh attemptId before anything
+      // else can set it (e.g. the resume call below, if it 404s immediately).
       setFatal(false)
       setError(null)
+      setTestResult(null)
+      setSubmitResult(null)
       try {
         // Mark this as real activity first, before anything else reads state -- this is
         // the reopen-triggers-escalation fix for the paths that skip /start's own resume
@@ -213,7 +286,21 @@ function useTutorSession(attemptId) {
     }
   }, [])
 
-  return { messages, sending, gateState, error, fatal, sendMessage, reportCodeChange }
+  return {
+    messages,
+    sending,
+    gateState,
+    error,
+    fatal,
+    testing,
+    testResult,
+    submitting,
+    submitResult,
+    sendMessage,
+    reportCodeChange,
+    runTest,
+    submit,
+  }
 }
 
 export { useTutorSession }

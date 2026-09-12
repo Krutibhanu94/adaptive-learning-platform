@@ -2,6 +2,7 @@ from config import engine
 from sqlalchemy import text
 from dataclasses import dataclass
 from enum import Enum
+import json
 
 class ReasoningState(Enum):
     GENUINE = "genuine"
@@ -393,7 +394,7 @@ def log_interaction(entry: InteractionLogEntry):
                 "dependency_score": entry.dependency_score,
                 "current_tier": entry.current_tier,
                 "turn_summary": entry.turn_summary,
-                "run_test_result": entry.run_test_result,
+                "run_test_result": json.dumps(entry.run_test_result) if entry.run_test_result is not None else None,
                 "created_at": entry.created_at
             }
         )

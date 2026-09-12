@@ -1,11 +1,18 @@
-//lets use the code editor from the react monaco editor package and make the editor
-//my editor defaults to python
-
+import { forwardRef, useImperativeHandle, useRef } from "react"
 import Editor from "@monaco-editor/react"
 
 import "./CodeEditor.css"
 
-function CodeEditor({ value, defaultValue = "", onChange, language = "python" }) {
+const CodeEditor = forwardRef(function CodeEditor(
+  { value, defaultValue = "", onChange, language = "python" },
+  ref
+) {
+  const editorRef = useRef(null)
+
+  useImperativeHandle(ref, () => ({
+    getValue: () => editorRef.current?.getValue() ?? "",
+  }))
+
   return (
     <div className="code-editor">
       <div className="code-editor__language">
@@ -20,10 +27,13 @@ function CodeEditor({ value, defaultValue = "", onChange, language = "python" })
           defaultValue={defaultValue}
           value={value}
           onChange={onChange}
+          onMount={(editor) => {
+            editorRef.current = editor
+          }}
         />
       </div>
     </div>
   )
-}
+})
 
 export default CodeEditor

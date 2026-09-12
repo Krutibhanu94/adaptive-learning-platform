@@ -1,0 +1,69 @@
+@reference "../index.css";
+
+.test-output {
+  @apply flex min-h-0 flex-1 flex-col border-t-2 border-black bg-[#EEEEFF];
+}
+
+.test-output__bar {
+  @apply flex items-center border-b-2 border-black px-3 py-2;
+}
+
+.test-output__header {
+  @apply text-sm font-black tracking-wide text-[#6E6E6E] uppercase;
+}
+
+.test-output__body {
+  @apply min-h-0 flex-1 overflow-auto p-3;
+}
+
+.test-output__status {
+  @apply mb-2 rounded-md border-2 border-black px-3 py-2 text-sm font-bold;
+}
+
+.test-output__status--pending {
+  @apply bg-white text-[#6E6E6E];
+}
+
+.test-output__status--pass {
+  @apply bg-[#D7F5DC] text-[#1E7A34];
+}
+
+.test-output__status--fail {
+  @apply bg-[#FDECEC] text-[#B3261E];
+}
+
+.test-output__examples {
+  @apply flex flex-col gap-3;
+}
+
+.test-output__example {
+  @apply rounded-md border-2 border-black bg-white p-2;
+}
+
+.test-output__example-label {
+  @apply mb-1 text-xs font-black text-[#6E6E6E];
+}
+
+.test-output__example-row {
+  @apply flex flex-wrap items-baseline gap-2 text-xs;
+}
+
+.test-output__example-key {
+  @apply font-bold text-[#6E6E6E];
+}
+
+.test-output__example-value {
+  @apply font-mono text-xs break-all text-black;
+}
+
+.test-output__empty {
+  @apply text-sm font-bold text-[#6E6E6E];
+}
+
+.test-output__failure {
+  @apply flex flex-col gap-2;
+}
+
+.test-output__failure-row {
+  @apply flex flex-col gap-1 rounded-md border-2 border-black bg-white p-2 text-xs;
+}
