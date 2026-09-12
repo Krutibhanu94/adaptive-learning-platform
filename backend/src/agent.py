@@ -29,15 +29,27 @@ from db import (
 )
 
 # Opening-silence thresholds come straight from the spec ("~3 minutes", "~5 minutes").
-# Ongoing idle/repeated-edit thresholds are carried over from the pre-refactor
-# implementation's own tuning constants (180s, 5 edits) -- the spec names these two
-# triggers but doesn't give numbers, so these are implementation defaults, not
-# spec-mandated values.
+# Ongoing idle/struggle thresholds are implementation defaults -- the spec names these
+# triggers but doesn't give numbers.
 OPENING_SILENCE_SECONDS = 180
 OPENING_FOLLOWUP_SECONDS = 300
 ONGOING_IDLE_SECONDS = 180
-ONGOING_REPEATED_EDIT_THRESHOLD = 5
 STARTING_HINT_CAP = 3
+# Struggle detection: two independent checks per code_update against a recent window,
+# not a raw count of similar edits (that was fragile -- see CLAUDE.md's turn-taking
+# notes for the two real bugs it produced). "Similar" is judged by SequenceMatcher
+# against any snapshot still in the window, not just the immediately-previous one, so
+# oscillating between a couple of similar-but-not-identical attempts is still caught.
+# "Growing" (net length increase over the window) vetoes it: a student slowly building a
+# solution incrementally has high similarity between adjacent snapshots purely because
+# each edit is small -- that's progress, not struggle, regardless of similarity.
+CODE_SNAPSHOT_WINDOW = 5
+CODE_SIMILARITY_THRESHOLD = 0.9
+CODE_GROWTH_THRESHOLD_CHARS = 20
+# How long code has to stay in a similar, non-growing state before it counts as struggle
+# -- set at parity with ONGOING_IDLE_SECONDS as a starting point, not derived from
+# anything authoritative.
+STRUGGLE_TIME_THRESHOLD_SECONDS = 180
 
 
 class GraphState(TypedDict, total=False):
@@ -59,7 +71,9 @@ class GraphState(TypedDict, total=False):
     student_code: str | None
     code_changed: bool
     idle_seconds: int
-    repeated_edit_count: int
+    # Computed server-side from stuck_since (see below), the same way idle_seconds is
+    # computed from last_activity_at -- agent.py never does its own datetime arithmetic.
+    struggle_duration_seconds: int
     run_test_clicked: bool
     run_test_result: dict | None
     submit_clicked: bool
@@ -77,7 +91,7 @@ class GraphState(TypedDict, total=False):
     pending_response_to: Literal["probe", "checkin", "hint"] | None
     # True only for the one-time proactive probe fired by opening-silence -- gates the
     # opening-specific 5-minute follow-up timer. Any other outstanding probe falls back
-    # to the standard idle/repeated-edit checks, not this timer.
+    # to the standard idle/struggle checks, not this timer.
     is_opening_probe: bool
     # Sticky, attempt-scoped: True from the first time evaluate_reasoning classifies a
     # reply as genuine, for the rest of the attempt -- same pattern as
@@ -87,10 +101,22 @@ class GraphState(TypedDict, total=False):
     # some point in this attempt, not from the immediately preceding message.
     genuine_reasoning_shown: bool
     # Server-computed bookkeeping the /turn endpoint uses to derive idle_seconds and
-    # repeated_edit_count each call -- not sent by the frontend directly, just persisted
-    # here via the checkpointer like everything else in this block.
+    # struggle_duration_seconds each call -- not sent by the frontend directly, just
+    # persisted here via the checkpointer like everything else in this block.
     last_activity_at: str | None
-    last_student_code: str | None
+    # Rolling window (most recent last, capped at CODE_SNAPSHOT_WINDOW) of code reported
+    # via code_update/run_test/submit -- used both for the similarity check and as the
+    # growth-comparison baseline (current length vs. the oldest length still in the
+    # window). Replaces a single last_student_code field.
+    recent_code_snapshots: list[str]
+    # ISO timestamp marking when the current "similar to something recent, and not
+    # growing" streak began, or None when not currently in one (either genuinely
+    # progressing, or too early to tell). Set on the first qualifying code_update, left
+    # unchanged while the streak continues (so duration accumulates), cleared back to
+    # None by genuine growth, a genuinely different (if not yet longer) attempt, a
+    # message, run_test, submit, or an intervention firing (the same "give a fresh start"
+    # treatment last_activity_at already gets in each of those cases).
+    stuck_since: str | None
 
     # Produced during this run.
     probe_question: str
@@ -343,6 +369,14 @@ def decline_hint(state: GraphState) -> GraphState:
         "hints_used": state.get("hints_used", 0),
         "pending_response_to": "hint",
         "is_opening_probe": False,
+        # Same fresh-start treatment as a real hint firing (see run_intervention) --
+        # without it, the very next heartbeat re-checks an already-past-threshold
+        # condition and escalates again almost immediately, giving no real window to
+        # act on "you can submit whenever you're ready."
+        "idle_seconds": 0,
+        "struggle_duration_seconds": 0,
+        "last_activity_at": datetime.now().isoformat(),
+        "stuck_since": None,
     }
 
 
@@ -353,14 +387,32 @@ def run_intervention(state: GraphState, tier: Literal["checkin", "hint"]) -> Gra
     hints_used_this_turn = 0
 
     if tier == "checkin":
-        prompt = f"""The student appears to have paused while working on this problem:
-        {state['problem_description']}
+        # Idle and struggle are genuinely different states and shouldn't share one
+        # generic message: idle means no activity at all (possibly thinking, possibly
+        # away); struggle means actively working but stuck in a non-progressing pattern.
+        # Telling an actively-typing student they've "paused" is inaccurate and
+        # confusing -- idle wins when both happen to be true (see route_turn), since it's
+        # the more literally-accurate description of what's happening right now.
+        if state.get("idle_seconds", 0) >= ONGOING_IDLE_SECONDS:
+            prompt = f"""The student appears to have paused while working on this problem:
+            {state['problem_description']}
 
-        Write a brief, warm check-in message asking why they've paused — without
-        assuming they're stuck, since they may just be thinking or took a short break.
-        Invite them to share what's going on. Keep the tone professional and direct,
-        matching a thoughtful tutor — no emoji, no exclamation-heavy or overly casual
-        phrasing."""
+            Write a brief, warm check-in message asking why they've paused — without
+            assuming they're stuck, since they may just be thinking or took a short break.
+            Invite them to share what's going on. Keep the tone professional and direct,
+            matching a thoughtful tutor — no emoji, no exclamation-heavy or overly casual
+            phrasing."""
+        else:
+            prompt = f"""The student is actively working on this problem, but their code
+            has stayed in a similar, non-progressing state for a while:
+            {state['problem_description']}
+
+            Write a brief, warm check-in that acknowledges they're actively engaged --
+            do not say or imply they've paused or stopped, since they haven't. Ask how
+            it's going, and invite them to share what's on their mind or where they feel
+            stuck, without assuming they ARE stuck. Keep the tone professional and
+            direct, matching a thoughtful tutor — no emoji, no exclamation-heavy or
+            overly casual phrasing."""
     else:
         hint_cap = state.get("hint_cap", STARTING_HINT_CAP)
         if hint_cap <= 1:
@@ -424,6 +476,16 @@ def run_intervention(state: GraphState, tier: Literal["checkin", "hint"]) -> Gra
         "hints_used": new_hints_used,
         "pending_response_to": tier,
         "is_opening_probe": False,
+        # A fresh start on both struggle signals the moment an intervention fires --
+        # without this, the very next heartbeat re-checks an already-past-threshold
+        # idle_seconds/struggle_duration_seconds and escalates again almost immediately,
+        # giving no real window for the student to notice and respond. If they go right
+        # back to the same stuck pattern, stuck_since restarts fresh from that moment;
+        # if they stop touching code entirely, idle correctly takes over instead.
+        "idle_seconds": 0,
+        "struggle_duration_seconds": 0,
+        "last_activity_at": datetime.now().isoformat(),
+        "stuck_since": None,
     }
 
 
@@ -661,8 +723,8 @@ def route_turn(state: GraphState) -> str:
 
     pending = state.get("pending_response_to")
     idle = state.get("idle_seconds", 0)
-    repeated_edits = state.get("repeated_edit_count", 0)
-    struggling = idle >= ONGOING_IDLE_SECONDS or repeated_edits >= ONGOING_REPEATED_EDIT_THRESHOLD
+    struggle_duration = state.get("struggle_duration_seconds", 0)
+    struggling = idle >= ONGOING_IDLE_SECONDS or struggle_duration >= STRUGGLE_TIME_THRESHOLD_SECONDS
 
     if state.get("student_message"):
         if pending == "probe":

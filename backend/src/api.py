@@ -1,4 +1,5 @@
 from datetime import datetime
+from difflib import SequenceMatcher
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
@@ -18,7 +19,13 @@ from db import (
     get_topics,
     insert_attempt,
 )
-from agent import STARTING_HINT_CAP, graph
+from agent import (
+    CODE_GROWTH_THRESHOLD_CHARS,
+    CODE_SIMILARITY_THRESHOLD,
+    CODE_SNAPSHOT_WINDOW,
+    STARTING_HINT_CAP,
+    graph,
+)
 from pydantic import BaseModel
 
 class ChatRequest(BaseModel):
@@ -28,6 +35,27 @@ class TurnRequest(BaseModel):
     event_type: Literal["message", "code_update", "heartbeat", "resume", "run_test", "submit"]
     message: str | None = None
     code: str | None = None
+
+def _is_similar_to_recent(code: str, recent_snapshots: list) -> bool:
+    # Similarity, not exact match, against every snapshot still in the window -- not
+    # just the immediately-previous one. Confirmed via a real debug session that natural
+    # stuck-typing almost never lands on byte-identical text twice in a row, but does
+    # oscillate between a couple of similar-but-not-identical attempts; comparing only
+    # against the last snapshot would miss exactly that oscillation.
+    return any(
+        SequenceMatcher(None, code, snapshot).ratio() >= CODE_SIMILARITY_THRESHOLD
+        for snapshot in recent_snapshots
+    )
+
+def _is_growing(code: str, recent_snapshots: list) -> bool:
+    # Compares against the oldest snapshot still in the window -- "growth over the last
+    # few edits," not lifetime growth since the very first line. A student slowly
+    # building a solution incrementally has high similarity between adjacent snapshots
+    # purely because each edit is small; that's still genuine progress, so growth vetoes
+    # the similarity check regardless of how similar consecutive edits look.
+    if not recent_snapshots:
+        return False
+    return (len(code) - len(recent_snapshots[0])) >= CODE_GROWTH_THRESHOLD_CHARS
 
 async def _run_checker(problem: dict, code: str) -> dict:
     # Off the event loop -- a correctness check can take up to the checker's own
@@ -97,6 +125,7 @@ async def start_attempt(student_id: int, topic_id: int):
             "problem_name": problem["problem_name"],
             "problem_description": problem["problem_description"],
             "test_cases": problem["test_cases"],
+            "starter_code": problem["starter_code"],
         }
 
     skill_state = get_student_skill_state(student_id, topic_id)
@@ -148,6 +177,7 @@ async def start_attempt(student_id: int, topic_id: int):
         "problem_name": next_problem["problem_name"],
         "problem_description": next_problem["problem_description"],
         "test_cases": next_problem["test_cases"],
+        "starter_code": next_problem["starter_code"],
     }
 
 @router.get("/attempts/{attempt_id}")
@@ -181,6 +211,7 @@ async def get_attempt_state(attempt_id: int):
         "problem_name": problem["problem_name"] if problem else None,
         "problem_description": problem["problem_description"] if problem else None,
         "test_cases": problem["test_cases"] if problem else None,
+        "starter_code": problem["starter_code"] if problem else None,
         "pending_response_to": pending,
         "current_message": current_message,
         "engagement_occurred": state.get("engagement_occurred", attempt["engagement_occurred"]),
@@ -215,17 +246,41 @@ async def turn(attempt_id: int, request: TurnRequest):
         turn_input["student_message"] = request.message
         turn_input["idle_seconds"] = 0
         turn_input["last_activity_at"] = now.isoformat()
+        # A genuine reply is a fresh start for the edit-based struggle signal too, not
+        # just the idle one -- otherwise a stale, already-past-threshold
+        # struggle_duration_seconds from before the reply immediately re-triggers
+        # struggling on the very next heartbeat, with zero real idle time elapsed,
+        # regardless of how genuinely the student just engaged.
+        turn_input["stuck_since"] = None
+        turn_input["struggle_duration_seconds"] = 0
 
     elif request.event_type == "code_update":
-        last_code = current.get("last_student_code")
-        code_changed = request.code != last_code
+        recent_snapshots = current.get("recent_code_snapshots") or []
+        growing = _is_growing(request.code, recent_snapshots)
+        similar = _is_similar_to_recent(request.code, recent_snapshots)
+        stuck_since = current.get("stuck_since")
+
+        if growing:
+            # Genuine progress vetoes struggle regardless of similarity -- see _is_growing.
+            new_stuck_since = None
+        elif similar:
+            # First qualifying snapshot starts the clock; otherwise leave it alone so
+            # duration accumulates across the whole streak, not just this one edit.
+            new_stuck_since = stuck_since or now.isoformat()
+        else:
+            # Genuinely different from anything recent, even if not yet longer --
+            # benefit of the doubt for exploring a new approach.
+            new_stuck_since = None
+
         turn_input["student_code"] = request.code
-        turn_input["code_changed"] = code_changed
-        turn_input["last_student_code"] = request.code
+        turn_input["code_changed"] = not similar
+        turn_input["recent_code_snapshots"] = (recent_snapshots + [request.code])[-CODE_SNAPSHOT_WINDOW:]
         turn_input["idle_seconds"] = 0
         turn_input["last_activity_at"] = now.isoformat()
-        turn_input["repeated_edit_count"] = (
-            0 if code_changed else current.get("repeated_edit_count", 0) + 1
+        turn_input["stuck_since"] = new_stuck_since
+        turn_input["struggle_duration_seconds"] = (
+            int((now - datetime.fromisoformat(new_stuck_since)).total_seconds())
+            if new_stuck_since else 0
         )
 
     elif request.event_type == "resume":
@@ -244,12 +299,13 @@ async def turn(attempt_id: int, request: TurnRequest):
         run_test_result = await _run_checker(problem_rows[0], request.code)
 
         turn_input["student_code"] = request.code
-        turn_input["last_student_code"] = request.code
+        turn_input["recent_code_snapshots"] = ((current.get("recent_code_snapshots") or []) + [request.code])[-CODE_SNAPSHOT_WINDOW:]
         turn_input["run_test_clicked"] = True
         turn_input["run_test_result"] = run_test_result
         turn_input["idle_seconds"] = 0
         turn_input["last_activity_at"] = now.isoformat()
-        turn_input["repeated_edit_count"] = 0
+        turn_input["stuck_since"] = None
+        turn_input["struggle_duration_seconds"] = 0
 
     elif request.event_type == "submit":
         # Defensive backstop -- route_turn already no-ops silently if this isn't
@@ -268,21 +324,30 @@ async def turn(attempt_id: int, request: TurnRequest):
         run_test_result = await _run_checker(problem_rows[0], request.code)
 
         turn_input["student_code"] = request.code
-        turn_input["last_student_code"] = request.code
+        turn_input["recent_code_snapshots"] = ((current.get("recent_code_snapshots") or []) + [request.code])[-CODE_SNAPSHOT_WINDOW:]
         turn_input["submit_clicked"] = True
         turn_input["run_test_result"] = run_test_result
         turn_input["idle_seconds"] = 0
         turn_input["last_activity_at"] = now.isoformat()
-        turn_input["repeated_edit_count"] = 0
+        turn_input["stuck_since"] = None
+        turn_input["struggle_duration_seconds"] = 0
 
     else:  # heartbeat -- a pure elapsed-time check, not new activity itself; leaves
-           # repeated_edit_count and last_activity_at untouched.
+           # last_activity_at and stuck_since untouched, just recomputes the derived
+           # idle_seconds/struggle_duration_seconds from them.
         last_activity_raw = current.get("last_activity_at")
         idle_seconds = (
             (now - datetime.fromisoformat(last_activity_raw)).total_seconds()
             if last_activity_raw else 0
         )
         turn_input["idle_seconds"] = int(idle_seconds)
+
+        stuck_since = current.get("stuck_since")
+        struggle_duration = (
+            (now - datetime.fromisoformat(stuck_since)).total_seconds()
+            if stuck_since else 0
+        )
+        turn_input["struggle_duration_seconds"] = int(struggle_duration)
 
     # probe_question/intervention_message are sticky in the checkpoint -- a turn that
     # doesn't generate new tutor-facing text (e.g. evaluate_reasoning silently scoring a
@@ -318,6 +383,15 @@ async def turn(attempt_id: int, request: TurnRequest):
     # result from a previous run_test/submit.
     if request.event_type in ("run_test", "submit"):
         response["run_test_result"] = run_test_result
+
+    if request.event_type == "code_update":
+        # Surfaced for debugging the struggle detector from the browser console -- these
+        # are what the backend actually computed by checking growth/similarity against
+        # its own recent_code_snapshots window, the authoritative answer to "did this
+        # register as struggle," not just what the client thinks it sent.
+        response["code_changed"] = result.get("code_changed")
+        response["stuck_since"] = result.get("stuck_since")
+        response["struggle_duration_seconds"] = result.get("struggle_duration_seconds")
 
     if request.event_type == "submit":
         response["final_result"] = result.get("final_result")

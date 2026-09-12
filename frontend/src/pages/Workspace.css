@@ -21,7 +21,35 @@
 }
 
 .workspace__problem-name {
-  @apply m-0 text-xl font-black sm:text-2xl;
+  @apply m-0 flex-1 text-xl font-black sm:text-2xl;
+}
+
+.workspace__run-test {
+  @apply border-2 border-black bg-white text-black shadow-[3px_3px_0px_0px_#000] transition-transform hover:bg-black/5 active:translate-x-0.75 active:translate-y-0.75 active:shadow-none disabled:pointer-events-none disabled:opacity-50;
+}
+
+.workspace__submit {
+  @apply border-2 border-black bg-[#3d348b] text-white shadow-[3px_3px_0px_0px_#000] transition-transform hover:bg-[#3d348b]/90 active:translate-x-0.75 active:translate-y-0.75 active:shadow-none disabled:pointer-events-none disabled:opacity-50;
+}
+
+.workspace__submit-banner {
+  @apply flex flex-wrap items-center justify-between gap-3 border-b-4 border-black px-3 py-3 sm:px-4;
+}
+
+.workspace__submit-banner--pass {
+  @apply bg-[#D7F5DC];
+}
+
+.workspace__submit-banner--fail {
+  @apply bg-[#FDECEC];
+}
+
+.workspace__submit-banner-text {
+  @apply text-base font-black;
+}
+
+.workspace__next-problem {
+  @apply border-2 border-black bg-[#3d348b] text-white shadow-[3px_3px_0px_0px_#000] transition-transform hover:bg-[#3d348b]/90 active:translate-x-0.75 active:translate-y-0.75 active:shadow-none;
 }
 
 .workspace__content {
