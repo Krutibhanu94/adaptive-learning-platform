@@ -17,11 +17,11 @@ help they actually needed to solve something, not on raw correctness alone.
 ## Architecture
 
 ```
-┌─────────────────────┐        HTTP/JSON        ┌──────────────────────────────────┐
-│   React frontend     │ ───────────────────────▶ │        FastAPI backend          │
-│  (Vite, Tailwind,    │ ◀─────────────────────── │           (api.py)              │
-│   shadcn, Monaco)    │                          └───────────────┬──────────────────┘
-└──────────────────────┘                                          │
+┌─────────────────────┐        HTTP/JSON         ┌──────────────────────────────────┐
+│   React frontend    │ ───────────────────────▶ │        FastAPI backend           │
+│  (Vite, Tailwind,   │ ◀─────────────────────── │           (api.py)               │
+│   shadcn, Monaco)   │                          └───────────────┬──────────────────┘
+└─────────────────────┘                                          │
                                                                    ▼
                                                      ┌──────────────────────────┐
                                                      │   LangGraph agent        │
@@ -33,20 +33,20 @@ help they actually needed to solve something, not on raw correctness alone.
                                         ┌───────────────────┘         └────────────────────┐
                                         ▼                                                   ▼
                           ┌──────────────────────────┐                     ┌──────────────────────────┐
-                          │   Anthropic Claude        │                     │  Postgres                │
-                          │ (probes, evaluation,      │                     │  - checkpointer (graph    │
-                          │  hints, tool calls)        │                     │    state, pause/resume)  │
+                          │   Anthropic Claude       │                     │  Postgres                │
+                          │ (probes, evaluation,     │                     │  - checkpointer (graph   │
+                          │  hints, tool calls)      │                     │    state, pause/resume)  │
                           └──────────────────────────┘                     │  - students, topics,     │
-                                                                            │    problems, attempts,    │
-                                                                            │    skill state, logs     │
-                                                                            └──────────────────────────┘
+                                                                           │    problems, attempts,   │
+                                                                           │    skill state, logs     │
+                                                                           └──────────────────────────┘
                                         │
                                         ▼
                           ┌──────────────────────────┐
-                          │  Correctness checker      │
-                          │  (checker.py) -- runs      │
-                          │  student code in an        │
-                          │  isolated Docker sandbox   │
+                          │  Correctness checker     │
+                          │  (checker.py) -- runs    │
+                          │  student code in an      │
+                          │  isolated Docker sandbox │
                           └──────────────────────────┘
 ```
 
