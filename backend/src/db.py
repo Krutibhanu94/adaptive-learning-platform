@@ -152,6 +152,7 @@ def get_topic_progress(student_id: int, topic_id: int):
         result = conn.execute(
             text("""
             SELECT DISTINCT ON (p.problem_id) p.problem_id, p.problem_name,
+                pa.attempt_id,
                 pa.result AS submit_result,
                 COALESCE(pa.submitted_at, pa.started_at) AS created_at
             FROM problem_attempts pa

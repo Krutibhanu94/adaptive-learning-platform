@@ -110,7 +110,10 @@ function Workspace() {
         console.error("No next problem available:", data.message)
         return
       }
-      navigate(`/${topicId}/workspace/${data.attempt_id}`, { state: { problem: data } })
+      // replace: true -- otherwise this pushes a new history entry on top of the previous
+      // problem's Workspace entry (same route pattern, component never unmounts), so the
+      // back button would go to the previous problem instead of back to Topic Problems.
+      navigate(`/${topicId}/workspace/${data.attempt_id}`, { state: { problem: data }, replace: true })
     } catch (error) {
       console.error("Error starting next problem:", error)
     }

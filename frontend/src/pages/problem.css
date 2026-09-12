@@ -1,7 +1,7 @@
 @reference "../index.css";
 
 .problem {
-  @apply flex h-full min-h-0 flex-col overflow-hidden rounded-md border-2 border-black bg-[#EEEEFF];
+  @apply flex h-full min-h-0 flex-col overflow-hidden rounded-md border-2 border-black bg-[#E8E4DC];
 }
 
 .problem__bar {
@@ -21,5 +21,9 @@
 }
 
 .problem__description {
-  @apply text-sm font-bold text-[#6E6E6E];
+  /* The raw description already has real newlines separating Example 1/2/3 blocks,
+     Input/Output/Explanation lines, and the Constraints section -- a plain div collapses
+     all of that into one run-on paragraph by default. pre-wrap preserves those line
+     breaks while still word-wrapping long lines instead of overflowing horizontally. */
+  @apply text-sm font-bold whitespace-pre-wrap text-[#6E6E6E];
 }

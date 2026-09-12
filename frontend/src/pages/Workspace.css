@@ -9,7 +9,11 @@
 }
 
 .workspace__header {
-  @apply flex items-center gap-3 border-b-4 border-black px-2 py-3 sm:px-4;
+  /* Fixed height (not padding-driven) so this lines up exactly with .tutor__bar's
+     border-bottom regardless of either side's content height -- the back button here
+     (size-9) is taller than tutor__bar's plain heading text, so equal py-3 alone doesn't
+     guarantee equal total height. */
+  @apply flex h-16 items-center gap-3 border-b-4 border-black px-2 sm:px-4;
 }
 
 .workspace__back {
@@ -73,5 +77,5 @@
 }
 
 .workspace__chat {
-  @apply h-full min-h-0 border-t-4 border-black p-2 sm:basis-1/4 sm:border-t-0 sm:border-l-4 sm:p-4;
+  @apply h-full min-h-0 border-t-4 border-black sm:basis-1/4 sm:border-t-0 sm:border-l-4;
 }
