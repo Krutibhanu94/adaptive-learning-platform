@@ -5,6 +5,28 @@ import { Input } from "@/components/ui/input"
 
 import "./tutor.css"
 
+// Nothing forbids the model from using markdown, and it sometimes does (**bold**,
+// `code`, etc.) -- messages were rendered as a plain string with no parsing at all, so
+// that showed up as literal asterisks/backticks instead of actual emphasis. A small
+// inline-only parser (not a full markdown library -- these are short chat bubbles, not
+// documents) covers what the model actually produces: **bold**, *italic*/_italic_, and
+// `inline code`.
+function renderInlineMarkdown(text) {
+  const pattern = /(\*\*.+?\*\*|\*.+?\*|_.+?_|`.+?`)/g
+  return text.split(pattern).map((part, index) => {
+    if (/^\*\*.+\*\*$/.test(part)) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>
+    }
+    if (/^\*.+\*$/.test(part) || /^_.+_$/.test(part)) {
+      return <em key={index}>{part.slice(1, -1)}</em>
+    }
+    if (/^`.+`$/.test(part)) {
+      return <code key={index}>{part.slice(1, -1)}</code>
+    }
+    return part
+  })
+}
+
 function Tutor({ messages, sending, error, fatal, onSendMessage }) {
   const [draft, setDraft] = useState("")
   const messagesRef = useRef(null)
@@ -41,7 +63,7 @@ function Tutor({ messages, sending, error, fatal, onSendMessage }) {
       <div className="tutor__messages" ref={messagesRef}>
         {messages.map((message, index) => (
           <div key={index} className={`tutor__message tutor__message--${message.role}`}>
-            {message.text}
+            {renderInlineMarkdown(message.text)}
           </div>
         ))}
       </div>

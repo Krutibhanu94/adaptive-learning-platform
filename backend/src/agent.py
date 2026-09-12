@@ -354,14 +354,15 @@ def evaluate_reasoning(state: GraphState) -> GraphState:
         followup_prompt = f"""You are a Socratic tutor. You asked the student: "{state['probe_question']}"
         The student reasoned through it and replied: "{state['student_message']}"
 
-        Write a short response with two parts:
-        1. Briefly acknowledge their reasoning without confirming whether it's correct
-           or complete, and without revealing or implying the answer.
-        2. Ask exactly one further question that surfaces a genuinely relevant angle
-           they haven't considered yet -- an edge case, a complexity concern, a
-           specific detail worth thinking about. If there's honestly nothing
-           substantive left worth probing, ask directly whether they feel ready to move
-           on to code instead of manufacturing a question for its own sake."""
+        Write a single short, flowing response as continuous prose -- never as a
+        labeled, numbered, or bulleted list, and never with headers like "Acknowledgement:"
+        or "Follow-up:". It needs to do two things, blended naturally into that prose: briefly
+        acknowledge their reasoning without confirming whether it's correct or complete, and
+        without revealing or implying the answer; and ask exactly one further question that
+        surfaces a genuinely relevant angle they haven't considered yet -- an edge case, a
+        complexity concern, a specific detail worth thinking about. If there's honestly
+        nothing substantive left worth probing, ask directly whether they feel ready to move
+        on to code instead of manufacturing a question for its own sake."""
 
     followup = model.invoke(followup_prompt)
 
