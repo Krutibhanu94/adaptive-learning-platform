@@ -74,6 +74,17 @@ function Workspace() {
     }
   }, [attemptId, problem])
 
+  // Syncing an external, uncontrolled widget (Monaco) with React state is exactly what
+  // an effect is for -- unlike the setProblem reset above, this isn't a setState call,
+  // so it doesn't belong in the render-time adjustment. Depends on attemptId (so it
+  // fires immediately on a Next Problem navigation, even if starter_code happens to
+  // already be known synchronously via router state) and on starter_code itself (so it
+  // also fires once the GET /attempts fallback above resolves asynchronously, on a
+  // direct visit/refresh where router state was never available).
+  useEffect(() => {
+    codeEditorRef.current?.setValue(problem?.starter_code ?? "")
+  }, [attemptId, problem?.starter_code])
+
   const handleRunTest = () => {
     if (testing || submitting || fatal || submitResult) return
     runTest(codeEditorRef.current?.getValue() ?? "")

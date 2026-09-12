@@ -1,7 +1,9 @@
 from datetime import datetime
 
+from checker import run_correctness_check
 from config import checkpoint_db_url, model
 from typing import Literal, TypedDict
+from langchain_core.tools import tool
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import StateGraph, START, END
 from psycopg.rows import dict_row
@@ -20,6 +22,7 @@ from db import (
     get_attempt,
     get_attempts_for_tier,
     get_next_problem,
+    get_problem,
     get_student_skill_state,
     increment_attempt_hints,
     log_interaction,
@@ -137,6 +140,48 @@ class GraphState(TypedDict, total=False):
     # reasoning_state above: never read back as an enum, and the checkpointer's msgpack
     # serializer doesn't natively support custom Enum types.
     final_result: str
+
+
+@tool
+def check_correctness(problem_id: int, student_code: str) -> dict:
+    """Check whether student_code passes problem_id's own correctness test harness.
+
+    Runs the code inside an isolated, resource-limited Docker sandbox (no network,
+    memory/CPU caps, non-root, read-only root filesystem, auto-removed after the
+    run) against the problem's own check(candidate) harness. Returns
+    {"all_passed": bool, "failures": [...]} -- "failures" holds zero or one
+    entries (the first case that failed, with the assertion source, call
+    args/kwargs, and what the candidate actually returned), not one entry per
+    test case, since check(candidate) halts at its first failing assert.
+    """
+    problem_rows = get_problem(problem_id)
+    if not problem_rows:
+        return {"all_passed": False, "failures": [{"error": f"Problem {problem_id} not found"}]}
+    return run_correctness_check(problem_rows[0], student_code)
+
+
+@tool
+def retrieve_next_problem(student_id: int, topic_id: int, tier: int) -> dict | None:
+    """Retrieve the next not-yet-passed problem for this student/topic at the given tier.
+
+    Returns the full problem row (problem_id, problem_name, problem_description,
+    test_cases, starter_code, etc.) as a dict, or None if no problem remains
+    available at that tier.
+    """
+    return get_next_problem(student_id, topic_id, tier)
+
+
+# Both tools are genuinely bound to `model` (with tool_choice forced to that exact tool)
+# -- but only inside the one node function that's meant to use it, never globally:
+# check_correctness inside run_check_node, retrieve_next_problem inside serve_node. Which
+# node runs at all is still decided entirely by deterministic Python routing
+# (route_turn/route_after_check/fixed edges), never by the model -- so the model is only
+# ever handed a tool to call after Python has already routed execution into the one turn
+# where that action is supposed to happen (a confirmed run_test/submit event for the
+# checker; the update -> decide -> serve chain, reachable only after a submit clears the
+# engagement gate, for the retriever). No other node calls bind_tools with either tool, so
+# no other turn's model call even receives that tool's schema.
+TOOLS = [check_correctness, retrieve_next_problem]
 
 
 class ReasoningEvaluation(BaseModel):
@@ -537,6 +582,54 @@ def escalate_node(state: GraphState) -> GraphState:
     }
 
 
+def run_check_node(state: GraphState) -> GraphState:
+    # Reached only when route_turn has already decided this is a confirmed run_test/submit
+    # event (see route_turn/route_after_check below) -- the model is only ever handed
+    # check_correctness right here, never anywhere else in the graph. tool_choice is
+    # forced so the check always actually runs, matching the hard guarantee the old plain
+    # function call gave; the fallback below (no tool_calls came back) exists purely to
+    # keep that guarantee even in the pathological case where the model doesn't comply.
+    #
+    # Plain sync .invoke(), not .ainvoke() -- PostgresSaver (the checkpointer in use) only
+    # implements the sync checkpoint interface; graph.ainvoke() raises NotImplementedError
+    # against it (confirmed empirically). Non-blocking is instead achieved one level up:
+    # api.py runs the whole graph.invoke() call inside run_in_threadpool, so this node's
+    # model call and Docker run both execute off the event loop regardless.
+    trusted_code = state.get("student_code") or ""
+    problem_id = state["problem_id"]
+
+    bound_model = model.bind_tools([check_correctness], tool_choice="check_correctness")
+    prompt = f"""Call check_correctness to check the student's current code against this
+    problem's test harness. Use problem_id={problem_id}. The student's current code is:
+
+    {trusted_code}"""
+
+    try:
+        response = bound_model.invoke(prompt)
+        tool_calls = getattr(response, "tool_calls", None) or []
+    except Exception:
+        tool_calls = []
+
+    args = tool_calls[0]["args"] if tool_calls else {}
+    # Defensive: this is the grading-critical path (decide_node's pass/fail feeds mastery/
+    # dependency/tier updates), so it can't depend on an LLM's transcription of a
+    # potentially large code block being byte-exact. The model still genuinely issues the
+    # call; this just refuses to trust anything but the trusted server-side values for
+    # what actually gets executed.
+    args["problem_id"] = problem_id
+    args["student_code"] = trusted_code
+
+    try:
+        run_test_result = check_correctness.invoke(args)
+    except Exception as e:
+        run_test_result = {
+            "all_passed": False,
+            "failures": [{"error": f"Correctness checker unavailable: {type(e).__name__}: {e}"}],
+        }
+
+    return {"run_test_result": run_test_result}
+
+
 def log_test_pass_node(state: GraphState) -> GraphState:
     # "All pass, and genuine engagement already occurred this attempt -> no forced
     # conversation." Still worth a log row for a complete audit trail of every Run Test
@@ -595,7 +688,18 @@ def decide_node(state: GraphState) -> GraphState:
     skill_state = get_student_skill_state(state["student_id"], state["topic_id"])
     current_tier = skill_state["current_tier"] if skill_state else 1
     hint_cap = skill_state["hint_cap"] if skill_state else STARTING_HINT_CAP
+    # How many concluded attempts at current_tier have happened since the last tier
+    # decision fired -- NOT re-derived from a "3 most recent attempts" query (that was the
+    # actual bug: once a tier ever accumulated 3 concluded attempts, that query kept
+    # returning 3 forever, so attempts_at_tier below was permanently >= 3 and the decision
+    # branch fired on literally every subsequent attempt instead of only every 3rd,
+    # resetting hint_cap to STARTING_HINT_CAP each time regardless of pass/fail). This
+    # counter makes the window explicit and stateful instead.
+    attempts_since_decision = skill_state["attempts_since_tier_decision"] if skill_state else 0
     hints_used = attempt["hints_used"]
+
+    run_test_result = state.get("run_test_result") or {}
+    final_result = SubmitResult.PASS if run_test_result.get("all_passed") else SubmitResult.FAIL
 
     escalated = False
     escalation_reason = None
@@ -607,27 +711,61 @@ def decide_node(state: GraphState) -> GraphState:
         if current_tier > 1:
             new_tier = current_tier - 1
             new_hint_cap = STARTING_HINT_CAP
+            # A real tier change -- start the next tier's window fresh, same as the
+            # normal step-down/advance branch below.
+            new_attempts_since_decision = 0
         else:
             new_tier = current_tier
             new_hint_cap = hint_cap
+            new_attempts_since_decision = attempts_since_decision
             escalated = True
             escalation_reason = "Hint cap exceeded with no tier remaining below the current one."
+    elif attempts_since_decision == 0 and hints_used == 0:
+        # No window currently in progress (this is the first attempt since the last
+        # decision, or the very first attempt at this tier), and this attempt needed no
+        # help at all -- a zero-hint attempt occurring *inside* an already-started window
+        # doesn't get this treatment; it's just a data point in that window's trend (the
+        # `else` branch below).
+        if final_result == SubmitResult.PASS:
+            # Zero hints AND a genuine pass is sufficient proof on its own -- advance
+            # immediately, no need to wait out a 3-attempt window.
+            new_tier = current_tier + 1
+            new_hint_cap = STARTING_HINT_CAP
+            new_attempts_since_decision = 0
+        else:
+            # Failed without needing a hint -- doesn't prove mastery (didn't pass), and
+            # doesn't trigger the window either (the window is only triggered by hint
+            # usage, per the design below). A true no-op: tier, hint_cap, and window state
+            # all carry forward unchanged, as if this attempt hadn't happened for tier-
+            # decision purposes.
+            new_tier = current_tier
+            new_hint_cap = hint_cap
+            new_attempts_since_decision = attempts_since_decision
     else:
-        # The hint-cap sequence (3, 2, 1) tracks the 1st/2nd/3rd attempt at this tier --
-        # not fixed problem IDs, whichever problems those happen to be. The advance/
-        # step-down decision only happens once, after the 3rd attempt at this tier.
-        recent_attempts = get_attempts_for_tier(state["student_id"], state["topic_id"], current_tier, limit=3)
-        attempts_at_tier = len(recent_attempts) + 1  # including this one, now concluding
+        # Either a window is already in progress (attempts_since_decision > 0), or this
+        # attempt itself is the one starting one (it must have used a hint to get here,
+        # since the elif above already catches the zero-hint/no-window case). The hint-cap
+        # sequence (3, 2, 1) tracks the 1st/2nd/3rd attempt in this window -- not fixed
+        # problem IDs, whichever problems those happen to be. The advance/step-down
+        # decision only happens once, after the window's 3rd attempt.
+        attempts_at_tier = attempts_since_decision + 1  # including this one, now concluding
 
         if attempts_at_tier < 3:
             # Still building the trend window -- just step the cap down for the next
             # attempt at this same tier (3 -> 2 -> 1). No decision yet.
             new_tier = current_tier
             new_hint_cap = max(1, hint_cap - 1)
+            new_attempts_since_decision = attempts_at_tier
         else:
-            # This is the 3rd (or later, defensively) attempt at this tier -- decide now,
-            # using this attempt plus the two most recent prior ones, oldest first.
-            chronological = list(reversed(recent_attempts))[-2:] + [
+            # This is genuinely the 3rd attempt in this window -- decide now, using this
+            # attempt plus the two most recent prior CONCLUDED ones at this tier
+            # (trustworthy as exactly "the other two in this window" now that
+            # attempts_at_tier actually gates when this branch runs), oldest first. Every
+            # attempt in this window is guaranteed to have hints_used > 0 on at least its
+            # first (that's the only way a window starts at all now), so "zero every time"
+            # can't happen here -- that case is handled entirely by the elif above instead.
+            recent_attempts = get_attempts_for_tier(state["student_id"], state["topic_id"], current_tier, limit=2)
+            chronological = list(reversed(recent_attempts)) + [
                 {"hints_used": hints_used, "hint_cap": hint_cap}
             ]
 
@@ -642,6 +780,7 @@ def decide_node(state: GraphState) -> GraphState:
             else:
                 new_tier = max(1, current_tier - 1)
             new_hint_cap = STARTING_HINT_CAP
+            new_attempts_since_decision = 0
 
     update_student_skill_state(StudentSkillStateUpdate(
         student_id=state["student_id"],
@@ -650,11 +789,9 @@ def decide_node(state: GraphState) -> GraphState:
         mastery_score=state["mastery_score"],
         dependency_score=state["dependency_score"],
         hint_cap=new_hint_cap,
+        attempts_since_tier_decision=new_attempts_since_decision,
         updated_at=datetime.now()
     ))
-
-    run_test_result = state.get("run_test_result") or {}
-    final_result = SubmitResult.PASS if run_test_result.get("all_passed") else SubmitResult.FAIL
 
     conclude_attempt(ProblemAttemptUpdate(
         attempt_id=state["attempt_id"],
@@ -695,7 +832,37 @@ def serve_node(state: GraphState) -> GraphState:
     # Returns the next problem's data only. Opening it (inserting its own
     # Problem_Attempts row) happens via a separate call once the student actually
     # starts it -- that's a fresh attempt lifecycle, not a continuation of this one.
-    next_problem = get_next_problem(state["student_id"], state["topic_id"], state.get("tier"))
+    #
+    # Reached only via the fixed update -> decide -> serve chain, itself only entered when
+    # route_turn returns "run_check" for a submit that clears the engagement gate, followed
+    # by route_after_check returning "update" -- never something the model can reach or
+    # trigger on its own. retrieve_next_problem is bound (tool_choice forced) only right
+    # here, same pattern and same reasoning as check_correctness in run_check_node. Plain
+    # sync .invoke() for the same reason as run_check_node -- see its comment.
+    student_id = state["student_id"]
+    topic_id = state["topic_id"]
+    tier = state.get("tier")
+
+    bound_model = model.bind_tools([retrieve_next_problem], tool_choice="retrieve_next_problem")
+    prompt = f"""Call retrieve_next_problem with student_id={student_id},
+    topic_id={topic_id}, tier={tier} to fetch this student's next problem."""
+
+    try:
+        response = bound_model.invoke(prompt)
+        tool_calls = getattr(response, "tool_calls", None) or []
+    except Exception:
+        tool_calls = []
+
+    args = tool_calls[0]["args"] if tool_calls else {}
+    # Defensive, same reasoning as run_check_node: these three values are already fully
+    # determined by state, so never trust the model's restatement of them over the
+    # trusted values themselves.
+    args["student_id"] = student_id
+    args["topic_id"] = topic_id
+    args["tier"] = tier
+
+    next_problem = retrieve_next_problem.invoke(args)
+
     if next_problem is None:
         return {
             "problem_id": None,
@@ -710,16 +877,16 @@ def serve_node(state: GraphState) -> GraphState:
 
 
 def route_turn(state: GraphState) -> str:
+    # submit/run_test both need a fresh correctness check before anything downstream can
+    # be decided -- route_after_check (below) picks "update" vs "log_test_pass"/"probe"
+    # once run_check_node has actually populated run_test_result for this invocation.
     if state.get("submit_clicked"):
         if state.get("engagement_occurred"):
-            return "update"
+            return "run_check"
         return "end"  # engagement gate not satisfied -- frontend should already block this
 
     if state.get("run_test_clicked"):
-        run_test_result = state.get("run_test_result") or {}
-        if run_test_result.get("all_passed") and state.get("engagement_occurred"):
-            return "log_test_pass"
-        return "probe"
+        return "run_check"
 
     pending = state.get("pending_response_to")
     idle = state.get("idle_seconds", 0)
@@ -760,12 +927,26 @@ def route_turn(state: GraphState) -> str:
     return "intervene_checkin" if struggling else "end"
 
 
+def route_after_check(state: GraphState) -> str:
+    # Runs immediately after run_check_node, once run_test_result actually reflects this
+    # invocation's code -- the same decision route_turn used to make inline back when
+    # api.py computed run_test_result before invoke() was ever called.
+    if state.get("submit_clicked"):
+        return "update"
+
+    run_test_result = state.get("run_test_result") or {}
+    if run_test_result.get("all_passed") and state.get("engagement_occurred"):
+        return "log_test_pass"
+    return "probe"
+
+
 graph_builder = StateGraph(GraphState)
 graph_builder.add_node("probe", probe_node)
 graph_builder.add_node("evaluate_reasoning", evaluate_reasoning)
 graph_builder.add_node("intervene_checkin", intervene_checkin_node)
 graph_builder.add_node("intervene_hint", intervene_hint_node)
 graph_builder.add_node("escalate", escalate_node)
+graph_builder.add_node("run_check", run_check_node)
 graph_builder.add_node("log_test_pass", log_test_pass_node)
 graph_builder.add_node("update", update_node)
 graph_builder.add_node("decide", decide_node)
@@ -780,17 +961,34 @@ graph_builder.add_conditional_edges(
         "intervene_checkin": "intervene_checkin",
         "intervene_hint": "intervene_hint",
         "escalate": "escalate",
-        "log_test_pass": "log_test_pass",
-        "update": "update",
+        "run_check": "run_check",
         "end": END,
     }
 )
 
+# run_check_node always runs the correctness check (via check_correctness, a real,
+# forced tool call -- see run_check_node) before anything downstream can be decided;
+# route_after_check then makes the same "update vs log_test_pass vs probe" decision
+# route_turn used to make inline, back when api.py computed run_test_result before ever
+# calling invoke().
+graph_builder.add_conditional_edges(
+    "run_check",
+    route_after_check,
+    {
+        "update": "update",
+        "log_test_pass": "log_test_pass",
+        "probe": "probe",
+    }
+)
+
 # Every branch except Submit's ends the invocation here -- this is the "pause" point.
-# The three genuine tools (correctness checker, problem retriever, concept-note
-# retriever) are NOT implemented as real tool-calling in this pass -- they remain
-# plain placeholder function calls (e.g. get_next_problem above), per the current
-# design scope. Real tool registration is separate, future work.
+# All three genuine tools are now real, properly-registered LangChain tools (TOOLS
+# above): check_correctness and retrieve_next_problem are genuinely bound to `model`
+# (tool_choice forced) inside run_check_node and serve_node respectively -- the one node
+# each is meant to fire in, never anywhere else in the graph (see the comments on TOOLS,
+# run_check_node, and serve_node for exactly why that scoping holds structurally, not just
+# by convention). The concept-note retriever remains an unregistered plain placeholder --
+# it isn't built at all yet.
 graph_builder.add_edge("probe", END)
 graph_builder.add_edge("evaluate_reasoning", END)
 graph_builder.add_edge("intervene_checkin", END)

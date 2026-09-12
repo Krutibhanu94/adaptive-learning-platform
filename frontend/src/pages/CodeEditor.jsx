@@ -11,6 +11,11 @@ const CodeEditor = forwardRef(function CodeEditor(
 
   useImperativeHandle(ref, () => ({
     getValue: () => editorRef.current?.getValue() ?? "",
+    // Monaco's own defaultValue only ever seeds the editor at mount -- setting a new
+    // defaultValue prop later (e.g. Workspace staying mounted across a Next Problem
+    // navigation) is a no-op. This is how a caller actually replaces the editor's
+    // content afterward.
+    setValue: (newValue) => editorRef.current?.setValue(newValue ?? ""),
   }))
 
   return (

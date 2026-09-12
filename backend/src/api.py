@@ -4,7 +4,6 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from starlette.concurrency import run_in_threadpool
-from checker import run_correctness_check
 from config import model
 from db import (
     ProblemAttemptInsert,
@@ -57,19 +56,6 @@ def _is_growing(code: str, recent_snapshots: list) -> bool:
         return False
     return (len(code) - len(recent_snapshots[0])) >= CODE_GROWTH_THRESHOLD_CHARS
 
-async def _run_checker(problem: dict, code: str) -> dict:
-    # Off the event loop -- a correctness check can take up to the checker's own
-    # timeout (currently 10s), and this is plain synchronous code (the docker SDK, not
-    # asyncio), so calling it directly here would stall every other concurrent request
-    # this worker is handling for that whole time.
-    try:
-        return await run_in_threadpool(run_correctness_check, problem, code)
-    except Exception as e:
-        return {
-            "all_passed": False,
-            "failures": [{"error": f"Correctness checker unavailable: {type(e).__name__}: {e}"}],
-        }
-
 router = APIRouter()
 
 @router.get("/students/{student_id}")
@@ -105,7 +91,8 @@ async def start_attempt(student_id: int, topic_id: int):
         # explicitly too, not just the timestamp: route_turn evaluates on every
         # invoke(), so a bare last_activity_at update would still leave a stale
         # idle_seconds from a prior heartbeat in play for this call.
-        graph.invoke(
+        await run_in_threadpool(
+            graph.invoke,
             {
                 "student_message": None,
                 "code_changed": False,
@@ -151,7 +138,8 @@ async def start_attempt(student_id: int, topic_id: int):
     # input this call), so route_turn's opening-silence check can't fire yet -- this
     # invocation always resolves to "end" with no side effects, same as any other
     # non-triggering turn.
-    graph.invoke(
+    await run_in_threadpool(
+        graph.invoke,
         {
             "student_id": student_id,
             "topic_id": topic_id,
@@ -293,15 +281,18 @@ async def turn(attempt_id: int, request: TurnRequest):
         turn_input["last_activity_at"] = now.isoformat()
 
     elif request.event_type == "run_test":
+        # The actual check now runs inside the graph itself (run_check_node, via a real
+        # forced tool call to check_correctness) -- not here. This 404 guard stays as a
+        # fast, clear failure for a missing problem rather than deferring to that node's
+        # own softer "problem not found" fallback, which is meant for the model-driven
+        # call, not this HTTP-level guard.
         problem_rows = get_problem(current["problem_id"])
         if not problem_rows:
             raise HTTPException(status_code=404, detail="Problem for this attempt no longer exists")
-        run_test_result = await _run_checker(problem_rows[0], request.code)
 
         turn_input["student_code"] = request.code
         turn_input["recent_code_snapshots"] = ((current.get("recent_code_snapshots") or []) + [request.code])[-CODE_SNAPSHOT_WINDOW:]
         turn_input["run_test_clicked"] = True
-        turn_input["run_test_result"] = run_test_result
         turn_input["idle_seconds"] = 0
         turn_input["last_activity_at"] = now.isoformat()
         turn_input["stuck_since"] = None
@@ -318,15 +309,15 @@ async def turn(attempt_id: int, request: TurnRequest):
                 detail="Engagement gate not satisfied -- at least one probe/evaluate exchange must occur before submitting.",
             )
 
+        # Same as run_test above: the check itself now runs inside run_check_node via a
+        # real forced tool call, not here -- this stays only as the fast 404 guard.
         problem_rows = get_problem(current["problem_id"])
         if not problem_rows:
             raise HTTPException(status_code=404, detail="Problem for this attempt no longer exists")
-        run_test_result = await _run_checker(problem_rows[0], request.code)
 
         turn_input["student_code"] = request.code
         turn_input["recent_code_snapshots"] = ((current.get("recent_code_snapshots") or []) + [request.code])[-CODE_SNAPSHOT_WINDOW:]
         turn_input["submit_clicked"] = True
-        turn_input["run_test_result"] = run_test_result
         turn_input["idle_seconds"] = 0
         turn_input["last_activity_at"] = now.isoformat()
         turn_input["stuck_since"] = None
@@ -357,7 +348,7 @@ async def turn(attempt_id: int, request: TurnRequest):
     prior_probe_question = current.get("probe_question")
     prior_intervention_message = current.get("intervention_message")
 
-    result = graph.invoke(turn_input, config)
+    result = await run_in_threadpool(graph.invoke, turn_input, config)
 
     new_message = None
     if result.get("probe_question") != prior_probe_question:
@@ -382,7 +373,7 @@ async def turn(attempt_id: int, request: TurnRequest):
     # otherwise an unrelated later heartbeat/message would re-surface a stale test
     # result from a previous run_test/submit.
     if request.event_type in ("run_test", "submit"):
-        response["run_test_result"] = run_test_result
+        response["run_test_result"] = result.get("run_test_result")
 
     if request.event_type == "code_update":
         # Surfaced for debugging the struggle detector from the browser console -- these

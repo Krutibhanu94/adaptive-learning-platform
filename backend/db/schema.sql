@@ -91,6 +91,15 @@ CREATE TABLE IF NOT EXISTS Student_Skill_State (
     -- value on entering a new tier; tapers toward zero as decide observes
     -- genuine improvement across successive same-tier attempts.
     hint_cap INT NOT NULL DEFAULT 3,
+    -- How many attempts have concluded at current_tier since the last tier decision --
+    -- NOT derivable from Problem_Attempts alone (querying "the 3 most recent attempts at
+    -- this tier" has no way to know which of those already fed an earlier decision, which
+    -- was the actual bug: once a tier had ever accumulated 3 concluded attempts, that query
+    -- kept returning 3 forever, re-deciding on every single subsequent attempt instead of
+    -- only every 3rd). decide_node increments this each non-deciding attempt and resets it
+    -- to 0 whenever a decision fires, making the window explicit and stateful instead of
+    -- re-derived from a fixed-limit query every time.
+    attempts_since_tier_decision INT NOT NULL DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
