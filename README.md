@@ -1,6 +1,6 @@
 # Adaptive Learning Platform
 
-A Socratic-questioning AI tutor for undergraduate CS students. The agent's one
+A Socratic-questioning AI tutor for CS students. The agent's one
 non-negotiable rule: **it never discloses a direct answer.** Every point of uncertainty —
 whether a student is stuck, bypassing, or ready to move on — is resolved by asking the
 student, not by telling them. It adapts problem difficulty per student based on how much
