@@ -1,4 +1,4 @@
-# Adaptive Tutor Agent
+# Adaptive Learning Platform
 
 A Socratic-questioning AI tutor for undergraduate CS students. The agent's one
 non-negotiable rule: **it never discloses a direct answer.** Every point of uncertainty —
