@@ -17,11 +17,19 @@ help they actually needed to solve something, not on raw correctness alone.
 ## Architecture
 
 ```
+<<<<<<< HEAD
 ┌─────────────────────┐        HTTP/JSON        ┌──────────────────────────────────┐
 │   React frontend     │ ───────────────────────▶ │        FastAPI backend          │
 │  (Vite, Tailwind,    │ ◀─────────────────────── │           (api.py)              │
 │   shadcn, Monaco)    │                          └───────────────┬──────────────────┘
 └──────────────────────┘                                          │
+=======
+┌─────────────────────┐        HTTP/JSON         ┌──────────────────────────────────┐
+│   React frontend    │ ───────────────────────▶ │        FastAPI backend           │
+│  (Vite, Tailwind,   │ ◀─────────────────────── │           (api.py)               │
+│   shadcn, Monaco)   │                          └───────────────┬──────────────────┘
+└─────────────────────┘                                          │
+>>>>>>> readme
                                                                    ▼
                                                      ┌──────────────────────────┐
                                                      │   LangGraph agent        │
@@ -33,6 +41,7 @@ help they actually needed to solve something, not on raw correctness alone.
                                         ┌───────────────────┘         └────────────────────┐
                                         ▼                                                   ▼
                           ┌──────────────────────────┐                     ┌──────────────────────────┐
+<<<<<<< HEAD
                           │   Anthropic Claude        │                     │  Postgres                │
                           │ (probes, evaluation,      │                     │  - checkpointer (graph    │
                           │  hints, tool calls)        │                     │    state, pause/resume)  │
@@ -47,6 +56,22 @@ help they actually needed to solve something, not on raw correctness alone.
                           │  (checker.py) -- runs      │
                           │  student code in an        │
                           │  isolated Docker sandbox   │
+=======
+                          │   Anthropic Claude       │                     │  Postgres                │
+                          │ (probes, evaluation,     │                     │  - checkpointer (graph   │
+                          │  hints, tool calls)      │                     │    state, pause/resume)  │
+                          └──────────────────────────┘                     │  - students, topics,     │
+                                                                           │    problems, attempts,   │
+                                                                           │    skill state, logs     │
+                                                                           └──────────────────────────┘
+                                        │
+                                        ▼
+                          ┌──────────────────────────┐
+                          │  Correctness checker     │
+                          │  (checker.py) -- runs    │
+                          │  student code in an      │
+                          │  isolated Docker sandbox │
+>>>>>>> readme
                           └──────────────────────────┘
 ```
 
